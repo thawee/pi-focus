@@ -1,0 +1,24 @@
+{
+  "name": "pi-focus",
+  "version": "1.0.0",
+  "description": "Dynamic Tool Routing and Plan Guardrails for Pi Agent",
+  "main": "extensions/index.ts",
+  "keywords": ["pi-package"],
+  "author": "Antigravity Pair",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "@sinclair/typebox": "^0.32.0",
+    "@mariozechner/pi-coding-agent": "latest"
+  },
+  "scripts": {
+    "build": "./build.sh",
+    "setup": "./setup.sh"
+  },
+  "pi": {
+    "extensions": [
+      "extensions/focus-mode/index.ts",
+      "extensions/smart-router/index.ts"
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.DS_Store
+
+# Temporary / AI Task files
+task.md
+tasks/
+test.md
