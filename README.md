@@ -1,15 +1,32 @@
 # ⚡ pi-focus
+Keep your Pi Agent fast, focused, and impossible to derail.
 
-Dynamic Tool Routing and Zero-Spawn Hot-Context State-Machine Orchestrator for [Pi Agent](https://pi.dev).
+pi-focus is a zero-spawn orchestration engine for Pi Agent that turns autonomous AI coding into a safe, stateful, high-performance workflow.
 
-`pi-focus` is a lightweight, high-performance TypeScript extension package designed to keep your AI workflows blazing fast, strictly focused, and securely bounded. By consolidating dynamic tool routing, path-level whitelisting, live `task.md` synchronization, and event-driven system prompt hot-swapping into **one single continuous terminal process**, it eliminates context bloat and ensures your agent never loses the plot.
+Unlike traditional multi-agent systems that constantly spawn new planner/coder processes and lose context along the way, pi-focus keeps everything running inside one continuous hot-context session. The result is dramatically lower latency, fewer hallucinations, reduced token bloat, and an AI that actually remembers why it's doing something.
+
+Built around a deterministic TypeScript state machine, `pi-focus` combines:
+
+- ⚡ Dynamic tool routing & token pruning
+- 🧠 Zero-spawn in-memory role switching
+- 📋 Live `task.md` synchronization
+- 🛡️ Path-level execution gating
+- 🔄 Event-driven system prompt hot-swapping
+- ⏸️ Safe suspend & resume workflows
+
+…into a single lightweight extension package designed for long-running AI development sessions.
+
+Instead of “prompting the AI to behave,” pi-focus structurally enforces workflow boundaries in code — preventing drift, rogue edits, and context collapse before they happen.
 
 ### 💰 The P.A.I.D. Workflow
 If you want to ship features fast without your AI going rogue, you have to get **P.A.I.D.**
-*   **P - Plan:** Type `/focus_plan` (or let the AI trigger it automatically for complex goals) to analyze the codebase and draft a step-by-step `task.md`.
-*   **A - Approve:** The state machine pauses and asks for your explicit approval via an interactive TUI.
-*   **I - Implement:** The agent **automatically** executes the code step-by-step (only use `/focus_resume` if you closed your terminal and need to pick up where you left off).
-*   **D - Done:** The agent structurally marks the task complete and safely auto-advances the state machine.
+
+- 📝 **[P]lan:** Type `/focus_plan` to analyze the codebase and draft a step-by-step `task.md`.
+- ✋ **[A]pprove:** The state machine pauses for your explicit approval via an interactive TUI.
+- ⚡ **[I]mplement:** The agent **automatically** executes the code step-by-step.
+- ✅ **[D]one:** The agent structurally marks the task complete and safely auto-advances.
+
+> 💡 **Note:** The AI can auto-trigger `/focus_plan` for complex goals. Only use `/focus_resume` if you close your terminal mid-task and need to pick up where you left off.
 
 ---
 
