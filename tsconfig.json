@@ -8,7 +8,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "outDir": "dist",
-    "rootDir": "extensions"
+    "rootDir": "src"
   },
-  "include": ["extensions/**/*"]
+  "include": ["src/**/*"]
 }

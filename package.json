@@ -1,8 +1,8 @@
 {
   "name": "pi-focus",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Dynamic Tool Routing and Plan Guardrails for Pi Agent",
-  "main": "extensions/index.ts",
+  "main": "src/index.ts",
   "keywords": ["pi-package"],
   "author": "Antigravity Pair",
   "license": "MIT",
@@ -17,8 +17,7 @@
   },
   "pi": {
     "extensions": [
-      "extensions/focus-mode/index.ts",
-      "extensions/focus-tools-optimizer/index.ts"
+      "./src/index.ts"
     ]
   }
 }

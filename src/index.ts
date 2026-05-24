@@ -3,7 +3,61 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
+import { createStatusBarFactory, triggerFooterRender } from "./statusBar.js";
 
+// ─── Tools Optimizer Types & Constants ───────────────────────────────────────
+interface ToolCategory {
+  signals: { re: RegExp; w: number }[];
+  antiSignals?: { re: RegExp; w: number }[];
+  allowedTools: string[];
+}
+
+const CATEGORIES: Record<string, ToolCategory> = {
+  write: {
+    signals: [
+      { re: /\b(fix|change|update|modify|edit|refactor|rename|replace|patch|add|insert|implement|create|write|make|delete|remove|strip|clean\s*up)\b/i, w: 3.0 },
+      { re: /\b(bug|error|typo|issue|broken|wrong|incorrect|failing|fail|crash)\b/i, w: 1.5 }
+    ],
+    antiSignals: [
+      { re: /\b(explain|what|why|how\s+does|tell\s+me)\b/i, w: 1.5 }
+    ],
+    allowedTools: ["read_file", "write_file", "edit_file", "patch_file", "execute_command", "bash", "solo_tool", "todo_update", "todo_complete"]
+  },
+  read: {
+    signals: [
+      { re: /\b(read|show|cat|display|print|view|open|look\s+at|check|see|inspect|review|analyze|analyse|examine|audit)\b/i, w: 3.0 },
+      { re: /\b(file|\.\w{1,4})\b/i, w: 1.0 }
+    ],
+    antiSignals: [
+      { re: /\b(fix|change|update|modify|add|remove|delete|create|write)\b/i, w: 2.0 }
+    ],
+    allowedTools: ["read_file", "find_files", "execute_command", "solo_tool", "scratchpad_read"]
+  },
+  search: {
+    signals: [
+      { re: /\b(find|search|grep|look\s+for|locate|where\s+is|all\s+uses?\s+of|all\s+references?|who\s+calls?|imports?\s+of)\b/i, w: 3.0 }
+    ],
+    antiSignals: [
+      { re: /\b(fix|change|update|create|write)\b/i, w: 2.0 }
+    ],
+    allowedTools: ["read_file", "find_files", "execute_command", "solo_tool"]
+  },
+  respond: {
+    signals: [
+      { re: /\b(explain|what\s+is|what\s+are|what\s+does|how\s+does|how\s+do|tell\s+me|describe|why\s+is|why\s+does|why\s+do|difference\s+between|compare|vs|versus|help|guide|tutorial|example|opinion|think|recommend|suggest|best\s+practice)\b/i, w: 3.0 },
+      { re: /\b(thanks|thank\s+you|ok|sure|yes|no|got\s+it)\b/i, w: 3.0 }
+    ],
+    antiSignals: [
+      { re: /\b(failing|failed|broken|crash|error|bug|wrong|file|code|function|class|module)\b/i, w: 1.5 }
+    ],
+    allowedTools: []
+  }
+};
+
+const DEFAULT_CATEGORY = "read";
+const SHORT_MSG_THRESHOLD = 10;
+
+// ─── Focus Mode Types ─────────────────────────────────────────────────────────
 
 interface TodoItem {
   id: string;
@@ -29,14 +83,17 @@ class StateMachine {
 
 export default function (pi: ExtensionAPI) {
 
+  // ─── Global State ───────────────────────────────────────────────────────────
   const stateMachine = new StateMachine();
   (global as any).piFocusState = stateMachine;
   let isWritingTaskFile = false;
   let taskWatcher: fs.FSWatcher | null = null;
   let taskFilePath = "";
 
+  let activeCategory: keyof typeof CATEGORIES = DEFAULT_CATEGORY;
+  let isOptimizerEnabled = true;
 
-  // ─── Embedded Agent Prompts (self-contained, no external file dependency) ────
+  // ─── Focus Mode Helper Functions ────────────────────────────────────────────
 
   function loadAgentPrompt(agentName: string): string {
     if (agentName === "planner") {
@@ -114,7 +171,6 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
     return "You are a focused coding assistant. Be concise, precise, and verify your work.";
   }
 
-  // Helper: Detect if a directory path is home or a hidden dot folder directly under home
   function isInsideHomeDotDir(cwd: string): boolean {
     const home = os.homedir();
     const normalizedCwd = path.normalize(cwd);
@@ -128,7 +184,6 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
     return firstSegment.startsWith(".");
   }
 
-  // Helper: Re-generate task.md workspace file
   function syncTaskMarkdown() {
     if (!taskFilePath) return;
     isWritingTaskFile = true;
@@ -138,7 +193,7 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
       content += `**Active State:** \`${stateMachine.activeState.toUpperCase()}\`\n\n`;
 
       if (stateMachine.todos.length === 0) {
-        content += `*No active tasks. Type \`/plan\` in the terminal to start a planning session.*\n`;
+        content += `*No active tasks. Type \`/focus_plan\` in the terminal to start a planning session.*\n`;
       } else {
         for (const t of stateMachine.todos) {
           const checkbox = t.completed ? "[x]" : "[ ]";
@@ -155,16 +210,15 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
       setTimeout(() => {
         isWritingTaskFile = false;
       }, 200);
+      triggerFooterRender();
     }
   }
 
-  // Helper: Parse workspace task.md checkboxes and titles fully
   function parseTaskMarkdownFully(markdown: string): TodoItem[] {
     const lines = markdown.split("\n");
     const parsedTodos: TodoItem[] = [];
 
     for (const line of lines) {
-      // Matches: - [ ] Todo #1: Some Title [Files: src/main.ts]
       const match = line.match(/^\s*-\s*\[([ xX/])\]\s*Todo\s+#?(\d+):\s*([^\[\u2190]+)(?:\s*\[Files:\s*([^\]]+)\])?/i);
       if (match) {
         const completed = match[1].toLowerCase() === "x";
@@ -186,93 +240,144 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
     return parsedTodos;
   }
 
-
-  // Helper: Append interactive decision-making guidelines to any prompt
   function injectDecisionGuidelines(prompt: string): string {
-    const decisionGuide = `
-
-[INTERACTIVE DECISIONS — PI-FOCUS]
-If you need user feedback, requirement clarification, or design trade-offs before proceeding:
-DO NOT output conversational questions in your main text. 
-Instead, invoke the 'focus_decision' tool, providing:
-1. 'question': The query details.
-2. 'options': A string array of pathways/options (e.g. ["Option A", "Option B"]).
-
-This will present a clean, high-signal, non-blocking choice card to the user in-line.
-`;
+    const decisionGuide = `\n\n[INTERACTIVE DECISIONS — PI-FOCUS]\nIf you need user feedback, requirement clarification, or design trade-offs before proceeding:\nDO NOT output conversational questions in your main text. \nInstead, invoke the 'focus_decision' tool, providing:\n1. 'question': The query details.\n2. 'options': A string array of pathways/options (e.g. ["Option A", "Option B"]).\n\nThis will present a clean, high-signal, non-blocking choice card to the user in-line.\n`;
     return prompt + decisionGuide;
   }
 
-  // ─── 1. Core Event hooks: Prompt Hot-Swapping ──────────────────────────────
+  // ─── 1. Tools Optimizer Logic ────────────────────────────────────────────────
+
+  pi.registerCommand("tools_optimizer", {
+    description: "Toggle the focus-tools-optimizer logic on or off",
+    async handler(args, ctx) {
+      isOptimizerEnabled = !isOptimizerEnabled;
+      const status = isOptimizerEnabled ? "ENABLED" : "DISABLED";
+      
+      if (!isOptimizerEnabled) {
+        pi.setActiveTools(pi.getAllTools().map(t => t.name));
+      }
+      
+      if (ctx.hasUI) {
+        ctx.ui.notify(`✦ pi-focus › Tools Optimizer is now ${status}`, isOptimizerEnabled ? "info" : "warning");
+        triggerFooterRender();
+      }
+    }
+  });
+
+  pi.on("input", async (event, ctx) => {
+    if (!isOptimizerEnabled) return;
+
+    const text = event.text ? event.text.trim() : "";
+    if (!text) return;
+
+    if (text.length <= SHORT_MSG_THRESHOLD && !/\b(run|fix|read|show|find|build|test|git|npm|pip|go|cd|ls|rm|mv|cp)\b/i.test(text)) {
+      activeCategory = "respond";
+    } else {
+      let bestCategory: keyof typeof CATEGORIES = DEFAULT_CATEGORY;
+      let maxScore = -Infinity;
+
+      for (const [name, cat] of Object.entries(CATEGORIES)) {
+        let score = 0;
+        for (const sig of cat.signals) {
+          if (sig.re.test(text)) score += sig.w;
+        }
+        for (const anti of cat.antiSignals || []) {
+          if (anti.re.test(text)) score -= anti.w;
+        }
+        if (score > maxScore) {
+          maxScore = score;
+          bestCategory = name as keyof typeof CATEGORIES;
+        }
+      }
+
+      if (maxScore > 0) {
+        activeCategory = bestCategory;
+      }
+    }
+
+    const allAvailableTools = pi.getAllTools().map(t => t.name);
+    
+    if (stateMachine.activeState !== "idle") {
+      pi.setActiveTools(allAvailableTools);
+      if (ctx.hasUI) {
+        ctx.ui.notify(`✦ pi-focus › Tools Optimizer Bypassed - State is ${stateMachine.activeState.toUpperCase()}`, "info");
+      }
+      return;
+    }
+
+    const allowed = CATEGORIES[activeCategory].allowedTools;
+    const toEnable = allAvailableTools.filter(t => {
+      if (t === "focus_decision" || allowed.includes(t)) return true;
+
+      if (activeCategory === "read" || activeCategory === "search") {
+        if (/search|read|query|get|fetch|list|view/i.test(t)) return true;
+      } else if (activeCategory === "write") {
+        if (/write|edit|update|create|delete|remove|patch|make|run/i.test(t)) return true;
+      }
+
+      return false;
+    });
+    
+    pi.setActiveTools(toEnable);
+
+    if (ctx.hasUI) {
+      const toolNames = toEnable.join(", ");
+      ctx.ui.notify(`✦ pi-focus › Tools Optimizer: ${activeCategory.toUpperCase()} (Tools: ${toolNames})`, "info");
+      triggerFooterRender();
+    }
+  });
+
+
+  // ─── 2. Focus Mode Orchestrator Event Hooks ─────────────────────────────────
   
   pi.on("before_agent_start", async (event, ctx) => {
-    // If in custom planning or worker state, dynamically swap out the turn's system instructions
     if (stateMachine.activeState === "planning") {
       const systemPrompt = loadAgentPrompt("planner");
       return { systemPrompt: injectDecisionGuidelines(systemPrompt) };
     } else if (stateMachine.activeState === "executing" && stateMachine.activeTodoId) {
       const systemPrompt = loadAgentPrompt("worker");
       const todo = stateMachine.getActiveTodo();
-      const anchorPrompt = todo ? `
-
-[ACTIVE PLAN ANCHOR — PI-FOCUS]
-You are currently executing Todo #${todo.id}: "${todo.title}"
-Authorized files to edit: [${todo.allowedFiles.join(", ") || "None specified"}]
-
-Please stick to the designated files. Verify edits against linter/compiler validations.
-Do NOT attempt collateral changes to unrelated modules.
-` : "";
+      const anchorPrompt = todo ? `\n\n[ACTIVE PLAN ANCHOR — PI-FOCUS]\nYou are currently executing Todo #${todo.id}: "${todo.title}"\nAuthorized files to edit: [${todo.allowedFiles.join(", ") || "None specified"}]\n\nPlease stick to the designated files. Verify edits against linter/compiler validations.\nDo NOT attempt collateral changes to unrelated modules.\n` : "";
       return { systemPrompt: injectDecisionGuidelines(systemPrompt + anchorPrompt) };
     } else if (stateMachine.activeState === "reviewing") {
       const systemPrompt = loadAgentPrompt("reviewer");
       return { systemPrompt: injectDecisionGuidelines(systemPrompt) };
     } else {
-      // In idle / standard conversation mode, still inject the guidelines into the active system prompt
       return { systemPrompt: injectDecisionGuidelines(event.systemPrompt) };
     }
   });
-
-
-  // ─── 2. Write Guard / Drift Blocker ────────────────────────────────────────
 
   pi.on("tool_call", async (event, ctx) => {
     const ev = event as any;
     const toolName = ev.toolName;
     const writeTools = ["write_file", "edit_file", "patch_file", "edit", "write", "create_file", "append_file"];
 
-    // ── PLANNING GATE: Hard-block ALL writes until plan is approved ────────────
     if (stateMachine.activeState === "planning") {
       if (writeTools.includes(toolName)) {
         const targetPath = ev.input?.path ? String(ev.input.path) : "(unknown file)";
 
-        // ✅ Always allow writing task.md — that IS the plan file
         const isTaskFile =
           targetPath === "task.md" ||
           targetPath === taskFilePath ||
           path.resolve(targetPath) === path.resolve(taskFilePath || "task.md");
 
         if (isTaskFile) {
-          return; // Allow task.md writes freely during planning
+          return;
         }
 
-        // Soft status — info level so user knows a file is being written during planning
         if (ctx.hasUI) {
           ctx.ui.notify(`✦ pi-focus › Agent writing ${path.basename(targetPath)} during planning mode`, "info");
         }
-
-        // Allow writes during planning mode to let the agent work as intended
         return;
       }
-      return; // Allow reads/non-write tools freely during planning
+      return;
     }
 
-    // ── EXECUTING GATE: Drift blocker — only allow whitelisted files ──────────
     if (stateMachine.activeState !== "executing") return;
 
     const todo = stateMachine.getActiveTodo();
     if (!todo || todo.allowedFiles.length === 0) return;
 
-    // Intercept filesystem write tools
     if (writeTools.includes(toolName)) {
       const targetPath = ev.input?.path ? String(ev.input.path) : "";
       if (!targetPath) return;
@@ -292,7 +397,6 @@ Do NOT attempt collateral changes to unrelated modules.
         if (ctx.hasUI) {
           ctx.ui.notify(`✦ pi-focus › Drift Blocked: ${targetPath}`, "error");
 
-          // Interactive Whitelist Confirmation Dialog
           const approve = await ctx.ui.confirm(
             "⚠️ PI-FOCUS Drift Intercepted",
             `Worker agent is attempting to edit: "${targetPath}".\nThis file is outside the whitelisted path boundaries for this Todo.\n\nDo you want to authorize editing this file?`
@@ -303,10 +407,9 @@ Do NOT attempt collateral changes to unrelated modules.
             stateMachine.getActiveTodo()!.allowedFiles.push(normalizedTarget);
             syncTaskMarkdown();
             ctx.ui.notify(`✦ pi-focus › Whitelisted file path: ${targetPath}`, "info");
-            return; // Returns undefined, allowing tool call to proceed!
+            return;
           }
 
-          // Interactive Re-planning Confirmation Dialog
           const rePlan = await ctx.ui.confirm(
             "🔄 Launch Re-planning Session?",
             `You blocked the edit to "${targetPath}". Do you want to pause execution and launch a quick re-planning session to adjust your strategy?`
@@ -316,7 +419,7 @@ Do NOT attempt collateral changes to unrelated modules.
             stateMachine.activeState = "planning";
             syncTaskMarkdown();
             ctx.ui.notify(`✦ pi-focus › Session pivoted to PLANNING mode`, "info");
-            pi.sendUserMessage(`/plan`, { deliverAs: "followUp" });
+            pi.sendUserMessage(`/focus_plan`, { deliverAs: "followUp" });
 
             return {
               block: true,
@@ -325,21 +428,17 @@ Do NOT attempt collateral changes to unrelated modules.
           }
         }
 
-        // Return block result to abort tool run safely
         return {
           block: true,
-          reason: `[DRIFT BLOCKED] You are attempting to edit: "${targetPath}". 
-Authorized files to modify for Todo #${todo.id} are strictly: [${todo.allowedFiles.join(", ")}].
-Do NOT edit other paths.`
+          reason: `[DRIFT BLOCKED] You are attempting to edit: "${targetPath}". \nAuthorized files to modify for Todo #${todo.id} are strictly: [${todo.allowedFiles.join(", ")}].\nDo NOT edit other paths.`
         };
       }
     }
   });
 
 
-  // ─── 3. Global Slash Commands (Process-less Handoffs) ──────────────────────
+  // ─── 3. Global Slash Commands ───────────────────────────────────────────────
 
-  // Command: /focus_plan
   pi.registerCommand("focus_plan", {
     description: "Swaps session to PLANNING mode instantly and analyzes codebase",
     async handler(args, ctx) {
@@ -352,7 +451,6 @@ Do NOT edit other paths.`
     }
   });
 
-  // Command: /focus_review
   pi.registerCommand("focus_review", {
     description: "Swaps session to REVIEWING mode instantly to inspect modifications",
     async handler(args, ctx) {
@@ -363,7 +461,6 @@ Do NOT edit other paths.`
     }
   });
 
-  // Command: /focus_resume — user-triggered plan review after startup
   pi.registerCommand("focus_resume", {
     description: "Review and resume an incomplete plan from task.md",
     async handler(args, ctx) {
@@ -383,7 +480,7 @@ Do NOT edit other paths.`
 
       stateMachine.todos = loadedTodos;
       stateMachine.activeTodoId = incomplete[0].id;
-      stateMachine.activeState = "planning"; // Planning gate active until approved
+      stateMachine.activeState = "planning";
       syncTaskMarkdown();
 
       const todoLines = loadedTodos
@@ -395,40 +492,23 @@ Do NOT edit other paths.`
         })
         .join("\n");
 
-      const reviewMessage = `📋 **Resume Plan**
-
-${incomplete.length} step(s) remaining in \`task.md\`:
-
-${todoLines}
-
-Please review the plan above. When ready, call focus_decision with these exact options:
-- "Approve and start execution" — begin working on the next incomplete step
-- "Modify the plan" — change or remove steps before starting
-- "Add more steps" — append additional todos
-- "Already done — clear the plan" — everything is complete, reset to idle
-- "Scrap and re-plan from scratch" — discard everything and start fresh`;
+      const reviewMessage = `📋 **Resume Plan**\n\n${incomplete.length} step(s) remaining in \`task.md\`:\n\n${todoLines}\n\nPlease review the plan above. When ready, call focus_decision with these exact options:\n- "Approve and start execution" — begin working on the next incomplete step\n- "Modify the plan" — change or remove steps before starting\n- "Add more steps" — append additional todos\n- "Already done — clear the plan" — everything is complete, reset to idle\n- "Scrap and re-plan from scratch" — discard everything and start fresh`;
 
       pi.sendUserMessage(reviewMessage);
     }
   });
 
-  // Tool: focus_decision (Asynchronous inline conversational questioner)
+  // ─── 4. Tools & Capabilities ────────────────────────────────────────────────
+
   pi.registerTool({
     name: "focus_decision",
     label: "Inline Decision Handshake",
-    description: "Suspends execution and presents a structured in-line multiple-choice question to the user to choose between discrete options or provide a custom response. Use this tool ONLY when you need the user to choose between a list of concrete options or pathways. DO NOT call this tool for standard conversational questions or normal Q&A where you can just write normal text.",
+    description: "Suspends execution and presents a structured in-line multiple-choice question to the user.",
     parameters: {
       type: "object",
       properties: {
-        question: {
-          type: "string",
-          description: "The requirement clarification or design trade-off question to present to the user."
-        },
-        options: {
-          type: "array",
-          items: { type: "string" },
-          description: "A list of discrete option strings representing the different pathways or solutions."
-        }
+        question: { type: "string" },
+        options: { type: "array", items: { type: "string" } }
       },
       required: ["question", "options"]
     },
@@ -437,10 +517,7 @@ Please review the plan above. When ready, call focus_decision with these exact o
       const options = (params.options || []) as string[];
 
       if (options.length === 0) {
-        return {
-          content: [{ type: "text", text: "Error: options array cannot be empty." }],
-          details: {}
-        };
+        return { content: [{ type: "text", text: "Error: options array cannot be empty." }], details: {} };
       }
 
       if (!ctx.hasUI) {
@@ -475,63 +552,30 @@ Please review the plan above. When ready, call focus_decision with these exact o
 
           editor.onSubmit = (value) => {
             const trimmed = value.trim();
-            if (trimmed) {
-              done({ answer: trimmed, wasCustom: true });
-            } else {
-              editMode = false;
-              editor.setText("");
-              refresh();
-            }
+            if (trimmed) { done({ answer: trimmed, wasCustom: true }); } 
+            else { editMode = false; editor.setText(""); refresh(); }
           };
 
-          function refresh() {
-            cachedLines = undefined;
-            tui.requestRender();
-          }
+          function refresh() { cachedLines = undefined; tui.requestRender(); }
 
           function handleInput(data: string) {
             if (editMode) {
-              if (matchesKey(data, Key.escape)) {
-                editMode = false;
-                editor.setText("");
-                refresh();
-                return;
-              }
-              editor.handleInput(data);
-              refresh();
-              return;
+              if (matchesKey(data, Key.escape)) { editMode = false; editor.setText(""); refresh(); return; }
+              editor.handleInput(data); refresh(); return;
             }
-
-            if (matchesKey(data, Key.up)) {
-              optionIndex = Math.max(0, optionIndex - 1);
-              refresh();
-              return;
-            }
-            if (matchesKey(data, Key.down)) {
-              optionIndex = Math.min(allOptions.length - 1, optionIndex + 1);
-              refresh();
-              return;
-            }
-
+            if (matchesKey(data, Key.up)) { optionIndex = Math.max(0, optionIndex - 1); refresh(); return; }
+            if (matchesKey(data, Key.down)) { optionIndex = Math.min(allOptions.length - 1, optionIndex + 1); refresh(); return; }
             if (matchesKey(data, Key.enter)) {
               const selected = allOptions[optionIndex];
-              if (selected.isOther) {
-                editMode = true;
-                refresh();
-              } else {
-                done({ answer: selected.label, wasCustom: false, index: optionIndex + 1 });
-              }
+              if (selected.isOther) { editMode = true; refresh(); } 
+              else { done({ answer: selected.label, wasCustom: false, index: optionIndex + 1 }); }
               return;
             }
-
-            if (matchesKey(data, Key.escape)) {
-              done(null);
-            }
+            if (matchesKey(data, Key.escape)) { done(null); }
           }
 
           function render(width: number): string[] {
             if (cachedLines) return cachedLines;
-
             const lines: string[] = [];
             const add = (s: string) => lines.push(truncateToWidth(s, width));
 
@@ -541,9 +585,7 @@ Please review the plan above. When ready, call focus_decision with these exact o
             add(theme.fg("text", theme.bold("  ❓ Question:")));
             
             const qLines = question.split("\n");
-            for (const qLine of qLines) {
-              add(theme.fg("text", `     ${qLine}`));
-            }
+            for (const qLine of qLines) { add(theme.fg("text", `     ${qLine}`)); }
 
             add(theme.fg("accent", "─".repeat(width)));
             add(theme.fg("text", theme.bold("  🔢 Choices:")));
@@ -553,52 +595,31 @@ Please review the plan above. When ready, call focus_decision with these exact o
               const selected = i === optionIndex;
               const prefix = selected ? theme.fg("accent", "  > ") : "    ";
               const color = selected ? "accent" : "text";
-
-              if (opt.isOther && editMode) {
-                add(prefix + theme.fg("accent", `[${i + 1}] ${opt.label} ✎`));
-              } else {
-                add(prefix + theme.fg(color, `[${i + 1}] ${opt.label}`));
-              }
+              if (opt.isOther && editMode) { add(prefix + theme.fg("accent", `[${i + 1}] ${opt.label} ✎`)); } 
+              else { add(prefix + theme.fg(color, `[${i + 1}] ${opt.label}`)); }
             }
 
             if (editMode) {
-              lines.push("");
-              add("  " + theme.fg("muted", " Your answer:"));
-              for (const line of editor.render(width - 4)) {
-                add(`    ${line}`);
-              }
+              lines.push(""); add("  " + theme.fg("muted", " Your answer:"));
+              for (const line of editor.render(width - 4)) { add(`    ${line}`); }
             }
 
             lines.push("");
-            if (editMode) {
-              add("  " + theme.fg("dim", "Enter to submit • Esc to go back"));
-            } else {
-              add("  " + theme.fg("dim", "↑↓ navigate • Enter to select • Esc to cancel"));
-            }
+            if (editMode) { add("  " + theme.fg("dim", "Enter to submit • Esc to go back")); } 
+            else { add("  " + theme.fg("dim", "↑↓ navigate • Enter to select • Esc to cancel")); }
             add(theme.fg("accent", "─".repeat(width)));
 
-            cachedLines = lines;
-            return lines;
+            cachedLines = lines; return lines;
           }
 
-          return {
-            render,
-            invalidate: () => {
-              cachedLines = undefined;
-            },
-            handleInput,
-          };
+          return { render, invalidate: () => { cachedLines = undefined; }, handleInput };
         }
       );
 
       if (!result) {
-        return {
-          content: [{ type: "text", text: "User cancelled the selection" }],
-          details: { question, options, answer: null }
-        };
+        return { content: [{ type: "text", text: "User cancelled the selection" }], details: { question, options, answer: null } };
       }
 
-      // Automatically pivot state machine to executing if user approves the plan
       const selectedAnswer = result.answer;
       const isApproval = selectedAnswer === "Approve and start execution" || 
                          selectedAnswer === "Approve and start working" ||
@@ -634,172 +655,101 @@ Please review the plan above. When ready, call focus_decision with these exact o
         }
         
         syncTaskMarkdown();
-        if (ctx.hasUI) {
-          ctx.ui.notify(`✦ pi-focus › Plan Approved! Swapped to EXECUTING (Todo #${stateMachine.activeTodoId} active)`, "info");
-        }
+        if (ctx.hasUI) { ctx.ui.notify(`✦ pi-focus › Plan Approved! Swapped to EXECUTING (Todo #${stateMachine.activeTodoId} active)`, "info"); }
       }
 
-      // ── "Already done" — mark all complete, reset to idle, clear task.md ──
-      const isAlreadyDone =
-        selectedAnswer === "Already done — clear the plan" ||
-        selectedAnswer.toLowerCase().includes("already done") ||
-        selectedAnswer.toLowerCase().includes("clear the plan") ||
-        selectedAnswer.toLowerCase().includes("all done");
+      const isAlreadyDone = selectedAnswer === "Already done — clear the plan" || selectedAnswer.toLowerCase().includes("already done") || selectedAnswer.toLowerCase().includes("clear the plan") || selectedAnswer.toLowerCase().includes("all done");
 
       if (isAlreadyDone) {
-        // Mark every todo as complete
         stateMachine.todos.forEach(t => { t.completed = true; });
         stateMachine.activeState = "idle";
         stateMachine.activeTodoId = null;
 
-        // Overwrite task.md with a clean completed state
         if (taskFilePath) {
           isWritingTaskFile = true;
           try {
-            const doneContent = `# Task Checklist: active plan progress\n\n` +
-              `This checklist is managed by your pi-focus State Machine Orchestrator.\n\n` +
-              `**Active State:** \`IDLE\`\n\n` +
-              `*All tasks completed. Start a new session with \`/focus_plan\` when ready.*\n`;
+            const doneContent = `# Task Checklist: active plan progress\n\nThis checklist is managed by your pi-focus State Machine Orchestrator.\n\n**Active State:** \`IDLE\`\n\n*All tasks completed. Start a new session with \`/focus_plan\` when ready.*\n`;
             fs.writeFileSync(taskFilePath, doneContent, "utf-8");
           } catch {}
           finally { setTimeout(() => { isWritingTaskFile = false; }, 200); }
         }
 
-        if (ctx.hasUI) {
-          ctx.ui.notify("✦ pi-focus › Plan cleared — back to IDLE", "info");
-        }
+        if (ctx.hasUI) { ctx.ui.notify("✦ pi-focus › Plan cleared — back to IDLE", "info"); }
       }
 
       if (result.wasCustom) {
-        return {
-          content: [{ type: "text", text: `[USER CHOICE] Selected custom write-in: "${result.answer}"` }],
-          details: { question, options, answer: result.answer, wasCustom: true }
-        };
+        return { content: [{ type: "text", text: `[USER CHOICE] Selected custom write-in: "${result.answer}"` }], details: { question, options, answer: result.answer, wasCustom: true } };
       }
-      return {
-        content: [{ type: "text", text: `[USER CHOICE] Selected Option #${result.index}: "${result.answer}"` }],
-        details: { question, options, answer: result.answer, wasCustom: false, index: result.index }
-      };
+      return { content: [{ type: "text", text: `[USER CHOICE] Selected Option #${result.index}: "${result.answer}"` }], details: { question, options, answer: result.answer, wasCustom: false, index: result.index } };
     }
   });
 
-  // Tool: focus_mark_done
   pi.registerTool({
     name: "focus_mark_done",
     label: "Mark Todo Complete",
-    description: "Use this tool to mark the currently active Todo step as complete. This structurally advances the state machine and updates task.md. DO NOT manually edit task.md to check off boxes — always use this tool.",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: []
-    },
+    description: "Use this tool to mark the currently active Todo step as complete. This structurally advances the state machine and updates task.md. DO NOT manually edit task.md to check off boxes.",
+    parameters: { type: "object", properties: {}, required: [] },
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       if (stateMachine.activeState !== "executing" || !stateMachine.activeTodoId) {
-        return {
-          content: [{ type: "text", text: "Error: No active Todo is currently executing." }],
-          details: {}
-        };
+        return { content: [{ type: "text", text: "Error: No active Todo is currently executing." }], details: {} };
       }
 
       const activeId = stateMachine.activeTodoId;
       const todo = stateMachine.getActiveTodo();
-      if (!todo) {
-        return {
-          content: [{ type: "text", text: `Error: Active Todo #${activeId} not found.` }],
-          details: {}
-        };
-      }
+      if (!todo) { return { content: [{ type: "text", text: `Error: Active Todo #${activeId} not found.` }], details: {} }; }
 
-      // Mark complete
       todo.completed = true;
 
-      // Find next incomplete
       const nextIncomplete = stateMachine.todos.find(t => !t.completed);
       
       if (nextIncomplete) {
         stateMachine.activeTodoId = nextIncomplete.id;
         syncTaskMarkdown();
-        if (ctx.hasUI) {
-          ctx.ui.notify(`✦ pi-focus › Todo #${activeId} complete. Moving to Todo #${nextIncomplete.id}`, "info");
-        }
-        return {
-          content: [{ type: "text", text: `Success: Todo #${activeId} marked complete. State machine advanced to Todo #${nextIncomplete.id}: "${nextIncomplete.title}".` }],
-          details: { nextTodoId: nextIncomplete.id, nextTitle: nextIncomplete.title }
-        };
+        if (ctx.hasUI) { ctx.ui.notify(`✦ pi-focus › Todo #${activeId} complete. Moving to Todo #${nextIncomplete.id}`, "info"); }
+        return { content: [{ type: "text", text: `Success: Todo #${activeId} marked complete. State machine advanced to Todo #${nextIncomplete.id}: "${nextIncomplete.title}".` }], details: { nextTodoId: nextIncomplete.id, nextTitle: nextIncomplete.title } };
       } else {
         stateMachine.activeTodoId = null;
         stateMachine.activeState = "idle";
         syncTaskMarkdown();
-        if (ctx.hasUI) {
-          ctx.ui.notify(`✦ pi-focus › All Todos completed! State reset to IDLE.`, "info");
-        }
-        return {
-          content: [{ type: "text", text: `Success: Todo #${activeId} marked complete. All tasks are now finished. State machine reset to IDLE.` }],
-          details: { nextTodoId: null, allComplete: true }
-        };
+        if (ctx.hasUI) { ctx.ui.notify(`✦ pi-focus › All Todos completed! State reset to IDLE.`, "info"); }
+        return { content: [{ type: "text", text: `Success: Todo #${activeId} marked complete. All tasks are now finished. State machine reset to IDLE.` }], details: { nextTodoId: null, allComplete: true } };
       }
     }
   });
 
-  // ─── 4. Live Workspace File Watcher (task.md) ──────────────────────────────
+  // ─── 5. Live Workspace File Watcher (task.md) ─────────────────────────────
   
-  // Helper: Initialize orchestrator workspace state and parent directory watcher
   function initializeOrchestrator(ctx: any) {
-    // Close any prior filesystem watcher to avoid leakage on reloads
-    if (taskWatcher) {
-      try { taskWatcher.close(); } catch {}
-      taskWatcher = null;
-    }
+    if (taskWatcher) { try { taskWatcher.close(); } catch {} taskWatcher = null; }
 
-    // Check if the directory is home or any hidden dot folder under home (e.g. ~/.config, ~/.npm, ~/.pi)
-    if (isInsideHomeDotDir(ctx.cwd)) {
-      taskFilePath = ""; // Do not allow path synchronization
-      return;
-    }
+    if (isInsideHomeDotDir(ctx.cwd)) { taskFilePath = ""; return; }
 
-    // Dynamically resolve workspace folder using ctx.cwd at session start
     const focusDir = path.join(ctx.cwd, ".focus");
-    if (!fs.existsSync(focusDir)) {
-      fs.mkdirSync(focusDir, { recursive: true });
-    }
+    if (!fs.existsSync(focusDir)) { fs.mkdirSync(focusDir, { recursive: true }); }
     taskFilePath = path.join(focusDir, "task.md");
 
-    // Load or generate task.md
     if (fs.existsSync(taskFilePath)) {
       try {
         const content = fs.readFileSync(taskFilePath, "utf-8");
         const loadedTodos = parseTaskMarkdownFully(content);
         if (loadedTodos.length > 0) {
           stateMachine.todos = loadedTodos;
-          // Find first incomplete todo
           const incomplete = loadedTodos.find(t => !t.completed);
           if (incomplete) {
-            // Boot into IDLE — user must explicitly /resume to continue.
-            // Never auto-trigger execution on startup.
             stateMachine.activeState = "idle";
             stateMachine.activeTodoId = incomplete.id;
-
-            if (ctx.hasUI) {
-              ctx.ui.notify(
-                `📋 Incomplete plan found (${loadedTodos.filter(t => !t.completed).length} step(s) remaining) — type /focus_resume to continue`,
-                "info"
-              );
-            }
+            if (ctx.hasUI) { ctx.ui.notify(`📋 Incomplete plan found (${loadedTodos.filter(t => !t.completed).length} step(s) remaining) — type /focus_resume to continue`, "info"); }
           } else {
             stateMachine.activeState = "idle";
             stateMachine.activeTodoId = null;
           }
         } else {
-          // If task.md exists but has no todos, default to planning
           stateMachine.activeState = "planning";
           stateMachine.todos = [];
           stateMachine.activeTodoId = null;
         }
-      } catch (err) {
-        console.error("[PI-FOCUS] Failed to parse existing task.md:", err);
-      }
+      } catch (err) { console.error("[PI-FOCUS] Failed to parse existing task.md:", err); }
     } else {
-      // Generate initial task.md if not exists in the active workspace
       stateMachine.activeState = "planning";
       stateMachine.todos = [];
       stateMachine.activeTodoId = null;
@@ -809,27 +759,21 @@ Please review the plan above. When ready, call focus_decision with these exact o
     if (ctx.hasUI) {
       let version = "1.1.0";
       try {
-        // Find package.json (works when running from source via setup.sh symlink)
-        const pkgPath = path.join(__dirname, "../../package.json");
-        if (fs.existsSync(pkgPath)) {
-          version = JSON.parse(fs.readFileSync(pkgPath, "utf-8")).version || version;
-        }
+        const pkgPath = path.join(__dirname, "../package.json");
+        if (fs.existsSync(pkgPath)) { version = JSON.parse(fs.readFileSync(pkgPath, "utf-8")).version || version; }
       } catch (e) {}
       
-      // If idle, show a basic welcome message. If active, the other toasts (like "incomplete plan found") suffice.
       if (stateMachine.activeState === "idle" || stateMachine.activeState === "planning") {
-        ctx.ui.notify(`✦ pi-focus v${version} loaded. Use /focus_plan to build features.`, "info");
+        ctx.ui.notify(`✦ pi-focus v${version} loaded. Enforcing autonomous AI workflows. Use /focus_plan to begin.`, "info");
       }
     }
 
-    // Safely establish the watcher on the parent directory of task.md
     try {
       const parentDir = path.dirname(taskFilePath);
       const fileName = path.basename(taskFilePath);
 
       if (fs.existsSync(parentDir)) {
         taskWatcher = fs.watch(parentDir, (eventType, filename) => {
-          // Robust check: match the exact filename and handle change events, avoiding ENOENT issues
           if (filename === fileName && eventType === "change" && !isWritingTaskFile) {
             try {
               if (fs.existsSync(taskFilePath)) {
@@ -863,12 +807,7 @@ Please review the plan above. When ready, call focus_decision with these exact o
                         pi.sendUserMessage(`I detected that you unmarked Todo #${m.id}. Resuming execution.`, { deliverAs: "followUp" });
                       }
                     }
-                    newTodos.push({
-                      ...match,
-                      title: m.title,
-                      allowedFiles: m.allowedFiles,
-                      completed: m.completed
-                    });
+                    newTodos.push({ ...match, title: m.title, allowedFiles: m.allowedFiles, completed: m.completed });
                   } else {
                     newTodos.push(m);
                     stateChanged = true;
@@ -880,28 +819,22 @@ Please review the plan above. When ready, call focus_decision with these exact o
                   syncTaskMarkdown();
                 }
               }
-            } catch (err) {
-              console.error("[PI-FOCUS Watcher] Error synchronizing task.md edits:", err);
-            }
+            } catch (err) { console.error("[PI-FOCUS Watcher] Error synchronizing task.md edits:", err); }
           }
         });
       }
-    } catch (err) {
-      console.warn("[PI-FOCUS Watcher] Could not establish task.md watch listener:", err);
-    }
+    } catch (err) { console.warn("[PI-FOCUS Watcher] Could not establish task.md watch listener:", err); }
   }
 
-  // ─── 4. Live Workspace File Watcher (task.md) ──────────────────────────────
-  
-  pi.on("session_start", async (_event, ctx) => {
-    initializeOrchestrator(ctx);
+  pi.on("session_start", async (_event, ctx) => { 
+    initializeOrchestrator(ctx); 
+    if (ctx.hasUI) {
+      ctx.ui.setFooter(createStatusBarFactory(ctx, {
+        getActiveState: () => stateMachine.activeState,
+        getOptimizerStatus: () => ({ enabled: isOptimizerEnabled, category: activeCategory })
+      }));
+    }
   });
-
-  pi.on("agent_start", async (_event, ctx) => {
-    initializeOrchestrator(ctx);
-  });
-
-  // ─── 5. Inline Decision Capture Hook ───────────────────────────────────────
-  
+  pi.on("agent_start", async (_event, ctx) => { initializeOrchestrator(ctx); });
 
 }

@@ -25,7 +25,7 @@ if [ -d "$GLOBAL_PI_DIR" ]; then
     echo -e "\x1b[32m✔ Found global Pi Agent directory at: $GLOBAL_PI_DIR\x1b[0m"
     
     # Clean up any old symlinks
-    OLD_LINKS=("plan-tracker" "task-checklist" "pivot-handler")
+    OLD_LINKS=("plan-tracker" "task-checklist" "pivot-handler" "focus-tools-optimizer" "focus-mode")
     for old in "${OLD_LINKS[@]}"; do
         if [ -L "$GLOBAL_PI_DIR/extensions/$old" ] || [ -d "$GLOBAL_PI_DIR/extensions/$old" ]; then
             rm -rf "$GLOBAL_PI_DIR/extensions/$old"
@@ -34,27 +34,21 @@ if [ -d "$GLOBAL_PI_DIR" ]; then
     done
 
     # We can symlink the extensions to ~/.pi/agent/extensions/
-    echo -e "Linking active extensions to $GLOBAL_PI_DIR/extensions/..."
+    echo -e "Linking active extension to $GLOBAL_PI_DIR/extensions/..."
     mkdir -p "$GLOBAL_PI_DIR/extensions"
     
-    # Symlink each extension
-    EXTENSIONS=("focus-tools-optimizer" "focus-mode")
-    for ext in "${EXTENSIONS[@]}"; do
-        if [ -L "$GLOBAL_PI_DIR/extensions/$ext" ]; then
-            rm "$GLOBAL_PI_DIR/extensions/$ext"
-        fi
-        ln -sf "$PROJECT_DIR/extensions/$ext" "$GLOBAL_PI_DIR/extensions/$ext"
-        echo -e "  ✔ Linked extension: $ext"
-    done
-
+    if [ -L "$GLOBAL_PI_DIR/extensions/pi-focus" ]; then
+        rm "$GLOBAL_PI_DIR/extensions/pi-focus"
+    fi
+    ln -sf "$PROJECT_DIR" "$GLOBAL_PI_DIR/extensions/pi-focus"
+    echo -e "  ✔ Linked extension: pi-focus"
 
     echo -e "\x1b[32m✔ Symlinks created successfully!\x1b[0m"
     echo -e "\n\x1b[33m👉 IMPORTANT: To complete registration, update your global ~/.pi/agent/settings.json:\x1b[0m"
     echo -e "💡 NOTE: Any active workflow/orchestration extensions may conflict with focus-mode."
     echo -e "   It is highly recommended to remove them from your settings (sample: \"git:github.com/HazAT/pi-solo\")."
-    echo -e "\nUnder the \"packages\" array, register these two extensions:"
-    echo -e "     \"local:extensions/focus-tools-optimizer\""
-    echo -e "     \"local:extensions/focus-mode\""
+    echo -e "\nUnder the \"packages\" array, register the single extension:"
+    echo -e "     \"local:extensions/pi-focus\""
 else
     echo -e "\x1b[31m✗ Could not find global Pi Agent directory at $GLOBAL_PI_DIR.\x1b[0m"
     echo -e "Please clone your pi-config repo to ~/.pi/agent first, then re-run this script."
