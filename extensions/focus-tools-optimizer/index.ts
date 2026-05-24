@@ -56,8 +56,8 @@ export default function (pi: ExtensionAPI) {
   let activeCategory: keyof typeof CATEGORIES = DEFAULT_CATEGORY;
   let isEnabled = true;
 
-  pi.registerCommand("smart_router", {
-    description: "Toggle the smart-router extension on or off",
+  pi.registerCommand("tools_optimizer", {
+    description: "Toggle the focus-tools-optimizer extension on or off",
     async handler(args, ctx) {
       isEnabled = !isEnabled;
       const status = isEnabled ? "ENABLED" : "DISABLED";
@@ -68,7 +68,7 @@ export default function (pi: ExtensionAPI) {
       }
       
       if (ctx.hasUI) {
-        ctx.ui.notify(`Smart Router is now ${status}`, isEnabled ? "info" : "warning");
+        ctx.ui.notify(`✦ pi-focus › Tools Optimizer is now ${status}`, isEnabled ? "info" : "warning");
       }
     }
   });
@@ -121,19 +121,31 @@ export default function (pi: ExtensionAPI) {
       // Keep ALL tools active during planning/execution/review tasks!
       pi.setActiveTools(allAvailableTools);
       if (ctx.hasUI) {
-        ctx.ui.notify(`Tool Routing: ACTIVE (${focusState.activeState.toUpperCase()}) - All Tools Enabled`, "info");
+        ctx.ui.notify(`✦ pi-focus › Tools Optimizer Bypassed - State is ${focusState.activeState.toUpperCase()}`, "info");
       }
       return;
     }
 
     const allowed = CATEGORIES[activeCategory].allowedTools;
-    // Globally whitelist 'focus_decision' so it remains active for all categories
-    const toEnable = allAvailableTools.filter(t => allowed.includes(t) || t === "focus_decision");
+    const toEnable = allAvailableTools.filter(t => {
+      // Always allow explicitly whitelisted tools and focus_decision
+      if (t === "focus_decision" || allowed.includes(t)) return true;
+
+      // Auto-whitelist custom tools based on naming conventions
+      if (activeCategory === "read" || activeCategory === "search") {
+        if (/search|read|query|get|fetch|list|view/i.test(t)) return true;
+      } else if (activeCategory === "write") {
+        if (/write|edit|update|create|delete|remove|patch|make|run/i.test(t)) return true;
+      }
+
+      return false;
+    });
     
     pi.setActiveTools(toEnable);
 
     if (ctx.hasUI) {
-      ctx.ui.notify(`Tool Routing: ${activeCategory.toUpperCase()} (Enabled ${toEnable.length}/${allAvailableTools.length} tools)`, "info");
+      const toolNames = toEnable.join(", ");
+      ctx.ui.notify(`✦ pi-focus › Tools Optimizer: ${activeCategory.toUpperCase()} (Tools: ${toolNames})`, "info");
     }
   });
 }

@@ -70,7 +70,7 @@ This means you must DISCOVER and BUILD the plan. Your job:
    - Options: ["Approve and start execution", "Modify a step", "Add more steps", "Scrap and re-plan"]
 
 ## Rules
-- NEVER start writing implementation code — that is the Worker's job.
+- You may explore and write implementation code if necessary. If you do, you MUST summarize your activity and any files you changed.
 - ALWAYS use \`focus_decision\` for choices. Never ask questions in plain conversational text.
 - If scope is unclear, ASK before drafting. A wrong plan is worse than a slow plan.
 - Each Todo step should be atomic (one concern, one set of files).
@@ -255,27 +255,13 @@ Do NOT attempt collateral changes to unrelated modules.
           return; // Allow task.md writes freely during planning
         }
 
-        // Soft status — info level (not error) so user knows the gate fired
-        // but it doesn't look like a crash. If LLM drops after this, user
-        // sees this toast and knows the system was waiting for approval.
+        // Soft status — info level so user knows a file is being written during planning
         if (ctx.hasUI) {
-          ctx.ui.notify(`📋 Plan approval required before writing ${path.basename(targetPath)}`, "info");
+          ctx.ui.notify(`✦ pi-focus › Agent writing ${path.basename(targetPath)} during planning mode`, "info");
         }
 
-        return {
-          block: true,
-          reason: `[PI-FOCUS PLANNING GATE] You attempted to write "${targetPath}" but the plan has NOT been approved yet.
-
-You MUST follow this sequence BEFORE writing any files:
-1. Present the proposed plan as a checklist (what you will do, which files you will touch).
-2. Write the plan to task.md in the correct checkbox format:
-   - [ ] Todo #1: <title> [Files: path/to/file]
-3. Call focus_decision with options: ["Approve and start execution", "Modify the plan", "Add more steps", "Cancel"]
-4. Wait for the user to select "Approve and start execution".
-
-Only after approval will the state machine unlock execution mode and allow file writes.
-DO NOT attempt to write files again until the user approves.`
-        };
+        // Allow writes during planning mode to let the agent work as intended
+        return;
       }
       return; // Allow reads/non-write tools freely during planning
     }
@@ -304,7 +290,7 @@ DO NOT attempt to write files again until the user approves.`
 
       if (!isAllowed) {
         if (ctx.hasUI) {
-          ctx.ui.notify(`Drift Blocked: ${targetPath}`, "error");
+          ctx.ui.notify(`✦ pi-focus › Drift Blocked: ${targetPath}`, "error");
 
           // Interactive Whitelist Confirmation Dialog
           const approve = await ctx.ui.confirm(
@@ -314,8 +300,9 @@ DO NOT attempt to write files again until the user approves.`
 
           if (approve) {
             todo.allowedFiles.push(targetPath);
+            stateMachine.getActiveTodo()!.allowedFiles.push(normalizedTarget);
             syncTaskMarkdown();
-            ctx.ui.notify(`Whitelisted file path: ${targetPath}`, "info");
+            ctx.ui.notify(`✦ pi-focus › Whitelisted file path: ${targetPath}`, "info");
             return; // Returns undefined, allowing tool call to proceed!
           }
 
@@ -328,7 +315,7 @@ DO NOT attempt to write files again until the user approves.`
           if (rePlan) {
             stateMachine.activeState = "planning";
             syncTaskMarkdown();
-            ctx.ui.notify(`Session pivoted to PLANNING mode`, "info");
+            ctx.ui.notify(`✦ pi-focus › Session pivoted to PLANNING mode`, "info");
             pi.sendUserMessage(`/plan`, { deliverAs: "followUp" });
 
             return {
@@ -357,8 +344,10 @@ Do NOT edit other paths.`
     description: "Swaps session to PLANNING mode instantly and analyzes codebase",
     async handler(args, ctx) {
       stateMachine.activeState = "planning";
+      stateMachine.todos = [];
+      stateMachine.activeTodoId = null;
       syncTaskMarkdown();
-      ctx.ui.notify("Pivoted to Planning Mode", "info");
+      ctx.ui.notify("✦ pi-focus › Pivoted to Planning Mode", "info");
       pi.sendUserMessage("Let's plan the architecture and checklist steps for this task.");
     }
   });
@@ -369,7 +358,7 @@ Do NOT edit other paths.`
     async handler(args, ctx) {
       stateMachine.activeState = "reviewing";
       syncTaskMarkdown();
-      ctx.ui.notify("Swapped to Code Review Mode", "info");
+      ctx.ui.notify("✦ pi-focus › Swapped to Code Review Mode", "info");
       pi.sendUserMessage("Please review the changes I've made in the repository.");
     }
   });
@@ -379,7 +368,7 @@ Do NOT edit other paths.`
     description: "Review and resume an incomplete plan from task.md",
     async handler(args, ctx) {
       if (!taskFilePath || !fs.existsSync(taskFilePath)) {
-        ctx.ui.notify("No task.md found in this workspace.", "warning");
+        ctx.ui.notify("✦ pi-focus › No task.md found in this workspace.", "warning");
         return;
       }
 
@@ -387,8 +376,8 @@ Do NOT edit other paths.`
       const loadedTodos = parseTaskMarkdownFully(content);
       const incomplete = loadedTodos.filter(t => !t.completed);
 
-      if (incomplete.length === 0) {
-        ctx.ui.notify("All tasks are already complete. Use /focus_plan to start something new.", "info");
+      if (!incomplete || incomplete.length === 0) {
+        ctx.ui.notify("✦ pi-focus › All tasks are already complete. Use /focus_plan to start something new.", "info");
         return;
       }
 
@@ -646,7 +635,7 @@ Please review the plan above. When ready, call focus_decision with these exact o
         
         syncTaskMarkdown();
         if (ctx.hasUI) {
-          ctx.ui.notify(`✔ Plan Approved! Swapped to EXECUTING (Todo #${stateMachine.activeTodoId} active)`, "info");
+          ctx.ui.notify(`✦ pi-focus › Plan Approved! Swapped to EXECUTING (Todo #${stateMachine.activeTodoId} active)`, "info");
         }
       }
 
@@ -677,7 +666,7 @@ Please review the plan above. When ready, call focus_decision with these exact o
         }
 
         if (ctx.hasUI) {
-          ctx.ui.notify("✅ Plan cleared — back to IDLE", "info");
+          ctx.ui.notify("✦ pi-focus › Plan cleared — back to IDLE", "info");
         }
       }
 
@@ -731,7 +720,7 @@ Please review the plan above. When ready, call focus_decision with these exact o
         stateMachine.activeTodoId = nextIncomplete.id;
         syncTaskMarkdown();
         if (ctx.hasUI) {
-          ctx.ui.notify(`✅ Todo #${activeId} complete. Moving to Todo #${nextIncomplete.id}`, "info");
+          ctx.ui.notify(`✦ pi-focus › Todo #${activeId} complete. Moving to Todo #${nextIncomplete.id}`, "info");
         }
         return {
           content: [{ type: "text", text: `Success: Todo #${activeId} marked complete. State machine advanced to Todo #${nextIncomplete.id}: "${nextIncomplete.title}".` }],
@@ -742,7 +731,7 @@ Please review the plan above. When ready, call focus_decision with these exact o
         stateMachine.activeState = "idle";
         syncTaskMarkdown();
         if (ctx.hasUI) {
-          ctx.ui.notify(`🎉 All Todos completed! State reset to IDLE.`, "info");
+          ctx.ui.notify(`✦ pi-focus › All Todos completed! State reset to IDLE.`, "info");
         }
         return {
           content: [{ type: "text", text: `Success: Todo #${activeId} marked complete. All tasks are now finished. State machine reset to IDLE.` }],
@@ -769,7 +758,11 @@ Please review the plan above. When ready, call focus_decision with these exact o
     }
 
     // Dynamically resolve workspace folder using ctx.cwd at session start
-    taskFilePath = path.join(ctx.cwd, "task.md");
+    const focusDir = path.join(ctx.cwd, ".focus");
+    if (!fs.existsSync(focusDir)) {
+      fs.mkdirSync(focusDir, { recursive: true });
+    }
+    taskFilePath = path.join(focusDir, "task.md");
 
     // Load or generate task.md
     if (fs.existsSync(taskFilePath)) {
@@ -814,7 +807,19 @@ Please review the plan above. When ready, call focus_decision with these exact o
     }
 
     if (ctx.hasUI) {
-      ctx.ui.notify(`[PI-FOCUS] State: ${stateMachine.activeState.toUpperCase()}`, "info");
+      let version = "1.1.0";
+      try {
+        // Find package.json (works when running from source via setup.sh symlink)
+        const pkgPath = path.join(__dirname, "../../package.json");
+        if (fs.existsSync(pkgPath)) {
+          version = JSON.parse(fs.readFileSync(pkgPath, "utf-8")).version || version;
+        }
+      } catch (e) {}
+      
+      // If idle, show a basic welcome message. If active, the other toasts (like "incomplete plan found") suffice.
+      if (stateMachine.activeState === "idle" || stateMachine.activeState === "planning") {
+        ctx.ui.notify(`✦ pi-focus v${version} loaded. Use /focus_plan to build features.`, "info");
+      }
     }
 
     // Safely establish the watcher on the parent directory of task.md

@@ -38,7 +38,7 @@ if [ -d "$GLOBAL_PI_DIR" ]; then
     mkdir -p "$GLOBAL_PI_DIR/extensions"
     
     # Symlink each extension
-    EXTENSIONS=("smart-router" "focus-mode")
+    EXTENSIONS=("focus-tools-optimizer" "focus-mode")
     for ext in "${EXTENSIONS[@]}"; do
         if [ -L "$GLOBAL_PI_DIR/extensions/$ext" ]; then
             rm "$GLOBAL_PI_DIR/extensions/$ext"
@@ -53,7 +53,7 @@ if [ -d "$GLOBAL_PI_DIR" ]; then
     echo -e "💡 NOTE: Any active workflow/orchestration extensions may conflict with focus-mode."
     echo -e "   It is highly recommended to remove them from your settings (sample: \"git:github.com/HazAT/pi-solo\")."
     echo -e "\nUnder the \"packages\" array, register these two extensions:"
-    echo -e "     \"local:extensions/smart-router\""
+    echo -e "     \"local:extensions/focus-tools-optimizer\""
     echo -e "     \"local:extensions/focus-mode\""
 else
     echo -e "\x1b[31m✗ Could not find global Pi Agent directory at $GLOBAL_PI_DIR.\x1b[0m"
