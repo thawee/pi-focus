@@ -15,6 +15,23 @@ interface ToolCallEvent {
   [key: string]: unknown;
 }
 
+// ─── OS-Specific File Editor Commands ───────────────────────────────────────
+function getOpenFileCommand(filePath: string): string {
+  const platform = process.platform;
+  const escapedPath = filePath.replace(/&/g, '\\&').replace(/"/g, '\\"');
+  
+  if (platform === 'win32') {
+    // Windows: explorer.exe can open files
+    return `explorer.exe "${escapedPath}"`;
+  } else if (platform === 'darwin') {
+    // macOS: open -e opens in default text editor
+    return `open -e "${escapedPath}"`;
+  } else {
+    // Linux: xdg-open or use default text editor
+    return `xdg-open "${escapedPath}"`;
+  }
+}
+
 // ─── Tools Optimizer Types & Constants ───────────────────────────────────────
 interface ToolCategory {
   signals: { re: RegExp; w: number }[];
@@ -106,6 +123,43 @@ export default function (pi: ExtensionAPI) {
   let isOptimizerEnabled = true;
 
   // ─── Focus Mode Helper Functions ────────────────────────────────────────────
+
+  function countSkillFiles(ctx: ExtensionContext): number {
+    const skillDirs = [
+      path.join(ctx.cwd, ".pi/skills"),
+      path.join(ctx.cwd, ".agents/skills"),
+      path.join(os.homedir(), ".pi/agent/skills"),
+      path.join(os.homedir(), ".agents/skills")
+    ];
+
+    let count = 0;
+    const seen = new Set<string>();
+
+    for (const dir of skillDirs) {
+      if (fs.existsSync(dir)) {
+        try {
+          // Look for SKILL.md files in subdirectories (one level deep is standard)
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              const skillPath = path.join(dir, entry.name, "SKILL.md");
+              if (fs.existsSync(skillPath) && !seen.has(skillPath)) {
+                count++;
+                seen.add(skillPath);
+              }
+            } else if (entry.name.toUpperCase() === "SKILL.MD") {
+                const skillPath = path.join(dir, entry.name);
+                if (!seen.has(skillPath)) {
+                    count++;
+                    seen.add(skillPath);
+                }
+            }
+          }
+        } catch (e) {}
+      }
+    }
+    return count;
+  }
 
   function loadAgentPrompt(agentName: string): string {
     if (agentName === "planner") {
@@ -276,6 +330,91 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
     }
   });
 
+  const showHotkeys = async (ctx: ExtensionContext) => {
+    if (!ctx.hasUI) return;
+    
+    // Define colors
+    const cyan = "\x1b[96m";
+    const white = "\x1b[37m";
+    const dim = "\x1b[90m";
+    const reset = "\x1b[39m";
+    const bold = "\x1b[1m";
+    const boldReset = "\x1b[22m";
+
+    let hotkeysText = `
+${cyan}${bold}✦ pi-focus — Quick Reference${boldReset}${reset}
+
+${white}${bold}Focus Mode (Autonomous Workflow):${boldReset}${reset}
+  ${cyan}🎯 PLANNING${reset}   ${dim}Agent researches and drafts a task.md checklist.${reset}
+  ${cyan}⚡ EXECUTING${reset}  ${dim}Agent implements tasks one-by-one with drift protection.${reset}
+  ${cyan}🔍 REVIEWING${reset}  ${dim}Agent performs a structured audit of all changes.${reset}
+
+  ${dim}Manual Overrides:${reset}
+  ${cyan}/focus_plan${reset}    ${dim}Restart planning   ${reset} ${cyan}/focus_review${reset}  ${dim}Start review${reset}
+  ${cyan}/focus_resume${reset}  ${dim}Resume tasks       ${reset} ${cyan}/focus_help${reset}    ${dim}This screen${reset}
+
+${white}${bold}Essential Shortcuts:${boldReset}${reset}
+  ${cyan}Up / Down${reset}        ${dim}Browse history (Up when empty)${reset}
+  ${cyan}Option+← / →${reset}     ${dim}Move by word${reset}
+  ${cyan}Option+Enter${reset}     ${dim}Queue follow-up message${reset}
+  ${cyan}Ctrl+L${reset}           ${dim}Open model selector / model info${reset}
+  ${cyan}Escape${reset}           ${dim}Cancel / Abort streaming${reset}
+
+${white}${bold}Prefixes:${boldReset}${reset}
+  ${cyan}/${reset}                ${dim}Slash commands${reset}
+  ${cyan}!${reset}                ${dim}Run bash command${reset}
+  ${cyan}!!${reset}               ${dim}Run bash (exclude from LLM context)${reset}`;
+
+    const focusCommands = ["focus_plan", "focus_resume", "focus_review", "focus_help", "tools_optimizer", "tools_optimizer"];
+    const allCommands = pi.getCommands();
+    
+    // Show high-value commands with descriptions
+    const sortedCommands = [...allCommands]
+      .filter(cmd => !focusCommands.includes(cmd.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // Then other commands (limited to avoid bloat)
+    if (sortedCommands.length > 0) {
+      hotkeysText += `\n\n${white}${bold}Other Commands:${boldReset}${reset}`;
+      const displayLimit = 8;
+      const toShow = sortedCommands.slice(0, displayLimit);
+      
+      for (const cmd of toShow) {
+        const desc = cmd.description ? ` - ${cmd.description}` : "";
+        const shortDesc = desc.length > 50 ? desc.substring(0, 47) + "..." : desc;
+        hotkeysText += `\n  ${cyan}/${cmd.name}${reset}${dim}${shortDesc}${reset}`;
+      }
+      
+      if (sortedCommands.length > displayLimit) {
+        hotkeysText += `\n  ${dim}... and ${sortedCommands.length - displayLimit} more (type / to list all)${reset}`;
+      }
+    }
+
+    // Agent Tools (Condensed)
+    const tools = pi.getAllTools();
+    const toolCount = tools.length;
+    hotkeysText += `\n\n${white}${bold}Agent Capabilities:${boldReset}${reset}
+  ${cyan}${toolCount} tools registered${reset} ${dim}(Agent uses these automatically)${reset}`;
+
+    hotkeysText += `\n\n${dim}Type${reset} ${cyan}/hotkeys${reset} ${dim}for full keyboard shortcut documentation.${reset}
+`;
+    ctx.ui.notify(hotkeysText, "info");
+  };
+
+  pi.registerCommand("focus_help", {
+    description: "Show pi-focus help and commands",
+    async handler(args, ctx) {
+      await showHotkeys(ctx);
+    }
+  });
+
+  pi.registerShortcut("?" as any, {
+    description: "Show pi-focus help",
+    async handler(ctx) {
+      await showHotkeys(ctx);
+    }
+  });
+
   pi.on("input", async (event, ctx) => {
     if (!isOptimizerEnabled) return;
 
@@ -379,7 +518,11 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
         }
 
         if (ctx.hasUI) {
-          ctx.ui.notify(`✦ pi-focus › Agent writing ${path.basename(targetPath)} during planning mode`, "info");
+          // Create OS-specific file editor command
+      const editorCommand = getOpenFileCommand(targetPath);
+      ctx.ui.notify(`✦ pi-focus › Agent writing \`${path.basename(targetPath)}\` during planning mode. Click [file](file://${targetPath}) to open in editor.`, "info");
+      // Also show command for users who can't click
+      ctx.ui.notify(`✦ pi-focus › Editor command: \`${editorCommand}\``, "info");
         }
         return;
       }
@@ -408,7 +551,9 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
 
       if (!isAllowed) {
         if (ctx.hasUI) {
-          ctx.ui.notify(`✦ pi-focus › Drift Blocked: ${targetPath}`, "error");
+          const editorCommand = getOpenFileCommand(targetPath);
+        ctx.ui.notify(`✦ pi-focus › Drift Blocked: \`${targetPath}\`. Click [file](file://${targetPath}) to open in editor.`, "error");
+        ctx.ui.notify(`✦ pi-focus › Editor command: \`${editorCommand}\``, "error");
 
           const approve = await ctx.ui.confirm(
             "⚠️ PI-FOCUS Drift Intercepted",
@@ -422,7 +567,9 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
               activeTodo.allowedFiles.push(normalizedTarget);
             }
             syncTaskMarkdown();
-            ctx.ui.notify(`✦ pi-focus › Whitelisted file path: ${targetPath}`, "info");
+            const editorCommand = getOpenFileCommand(targetPath);
+            ctx.ui.notify(`✦ pi-focus › Whitelisted file path: \`${targetPath}\`. Click [file](file://${targetPath}) to open in editor.`, "info");
+            ctx.ui.notify(`✦ pi-focus › Editor command: \`${editorCommand}\``, "info");
             return;
           }
 
@@ -435,6 +582,8 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
             stateMachine.activeState = "planning";
             syncTaskMarkdown();
             ctx.ui.notify(`✦ pi-focus › Session pivoted to PLANNING mode`, "info");
+      const editorCommand = getOpenFileCommand(taskFilePath);
+      ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info");
             pi.sendUserMessage(`/focus_plan`, { deliverAs: "followUp" });
 
             return {
@@ -463,6 +612,8 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
       stateMachine.activeTodoId = null;
       syncTaskMarkdown();
       ctx.ui.notify("✦ pi-focus › Pivoted to Planning Mode", "info");
+      const editorCommand = getOpenFileCommand(taskFilePath);
+      ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info");
       pi.sendUserMessage("Let's plan the architecture and checklist steps for this task.");
     }
   });
@@ -473,6 +624,8 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
       stateMachine.activeState = "reviewing";
       syncTaskMarkdown();
       ctx.ui.notify("✦ pi-focus › Swapped to Code Review Mode", "info");
+      const editorCommand = getOpenFileCommand(taskFilePath);
+      ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info");
       pi.sendUserMessage("Please review the changes I've made in the repository.");
     }
   });
@@ -482,6 +635,7 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
     async handler(args, ctx) {
       if (!taskFilePath || !fs.existsSync(taskFilePath)) {
         ctx.ui.notify("✦ pi-focus › No task.md found in this workspace.", "warning");
+        ctx.ui.notify("✦ pi-focus › Create task.md to start planning sessions.", "warning");
         return;
       }
 
@@ -656,12 +810,16 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
               } else {
                 stateMachine.activeState = "idle";
                 stateMachine.activeTodoId = null;
-                ctx.ui.notify(`✦ pi-focus › All tasks complete. Use /focus_plan to start a new session.`, "info");
+                const editorCommand = getOpenFileCommand(taskFilePath);
+        ctx.ui.notify(`✦ pi-focus › All tasks complete. Use /focus_plan to start a new session.`, "info");
+        ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info");
               }
             } else {
               stateMachine.activeState = "idle";
               stateMachine.activeTodoId = null;
+              const editorCommand = getOpenFileCommand(taskFilePath);
               ctx.ui.notify(`✦ pi-focus › No tasks found. Use /focus_plan to start a new session.`, "info");
+              ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info");
             }
           } catch {
             stateMachine.activeState = "idle";
@@ -674,7 +832,11 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
         }
         
         syncTaskMarkdown();
-        if (ctx.hasUI) { ctx.ui.notify(`✦ pi-focus › Plan Approved! Swapped to EXECUTING (Todo #${stateMachine.activeTodoId} active)`, "info"); }
+        if (ctx.hasUI) { 
+          ctx.ui.notify(`✦ pi-focus › Plan Approved! Swapped to EXECUTING (Todo #${stateMachine.activeTodoId} active)`, "info"); 
+          const editorCommand = getOpenFileCommand(taskFilePath);
+          ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info"); 
+        }
       }
 
       const isAlreadyDone = selectedAnswer === "Already done — clear the plan" || selectedAnswer.toLowerCase().includes("already done") || selectedAnswer.toLowerCase().includes("clear the plan") || selectedAnswer.toLowerCase().includes("all done");
@@ -695,7 +857,11 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
           finally { setTimeout(() => { isWritingTaskFile = false; }, 200); }
         }
 
-        if (ctx.hasUI) { ctx.ui.notify("✦ pi-focus › Plan cleared — back to IDLE", "info"); }
+        if (ctx.hasUI) { 
+          ctx.ui.notify("✦ pi-focus › Plan cleared — back to IDLE", "info"); 
+          const editorCommand = getOpenFileCommand(taskFilePath);
+          ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info"); 
+        }
       }
 
       if (result.wasCustom) {
@@ -726,13 +892,21 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
       if (nextIncomplete) {
         stateMachine.activeTodoId = nextIncomplete.id;
         syncTaskMarkdown();
-        if (ctx.hasUI) { ctx.ui.notify(`✦ pi-focus › Todo #${activeId} complete. Moving to Todo #${nextIncomplete.id}`, "info"); }
+        if (ctx.hasUI) { 
+          ctx.ui.notify(`✦ pi-focus › Todo #${activeId} complete. Moving to Todo #${nextIncomplete.id}`, "info"); 
+          const editorCommand = getOpenFileCommand(taskFilePath);
+          ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info"); 
+        }
         return { content: [{ type: "text", text: `Success: Todo #${activeId} marked complete. State machine advanced to Todo #${nextIncomplete.id}: "${nextIncomplete.title}".` }], details: { nextTodoId: nextIncomplete.id, nextTitle: nextIncomplete.title } };
       } else {
         stateMachine.activeTodoId = null;
         stateMachine.activeState = "idle";
         syncTaskMarkdown();
-        if (ctx.hasUI) { ctx.ui.notify(`✦ pi-focus › All Todos completed! State reset to IDLE.`, "info"); }
+        if (ctx.hasUI) { 
+          ctx.ui.notify(`✦ pi-focus › All Todos completed! State reset to IDLE.`, "info"); 
+          const editorCommand = getOpenFileCommand(taskFilePath);
+          ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info"); 
+        }
         return { content: [{ type: "text", text: `Success: Todo #${activeId} marked complete. All tasks are now finished. State machine reset to IDLE.` }], details: { nextTodoId: null, allComplete: true } };
       }
     }
@@ -759,7 +933,11 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
           if (incomplete) {
             stateMachine.activeState = "idle";
             stateMachine.activeTodoId = incomplete.id;
-            if (ctx.hasUI) { ctx.ui.notify(`📋 Incomplete plan found (${loadedTodos.filter(t => !t.completed).length} step(s) remaining) — type /focus_resume to continue`, "info"); }
+            if (ctx.hasUI) { 
+              ctx.ui.notify(`📋 Incomplete plan found (${loadedTodos.filter(t => !t.completed).length} step(s) remaining) — type /focus_resume to continue`, "info"); 
+              const editorCommand = getOpenFileCommand(taskFilePath);
+              ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info"); 
+            }
           } else {
             stateMachine.activeState = "idle";
             stateMachine.activeTodoId = null;
@@ -786,6 +964,8 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
       
       if (stateMachine.activeState === "idle" || stateMachine.activeState === "planning") {
         ctx.ui.notify(`✦ pi-focus v${version} loaded. Enforcing autonomous AI workflows. Use /focus_plan to begin.`, "info");
+        const editorCommand = getOpenFileCommand(taskFilePath);
+        ctx.ui.notify(`✦ pi-focus › Task file: [task.md](file://${taskFilePath}) - \`${editorCommand}\``, "info");
       }
     }
 
@@ -852,7 +1032,10 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
     if (ctx.hasUI) {
       ctx.ui.setFooter(createStatusBarFactory(ctx, {
         getActiveState: () => stateMachine.activeState,
-        getOptimizerStatus: () => ({ enabled: isOptimizerEnabled, category: activeCategory })
+        getOptimizerStatus: () => ({ enabled: isOptimizerEnabled, category: activeCategory }),
+        getToolsCount: () => pi.getAllTools().length,
+        getActiveToolsCount: () => pi.getActiveTools().length,
+        getSkillFilesCount: () => countSkillFiles(ctx)
       }));
     }
   });

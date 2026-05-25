@@ -6,6 +6,9 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@mario
 export interface StatusBarState {
     getActiveState: () => string;
     getOptimizerStatus: () => { enabled: boolean; category: string };
+    getToolsCount: () => number;
+    getActiveToolsCount: () => number;
+    getSkillFilesCount: () => number;
 }
 
 // Keep track of the polling interval to clean up when the footer is disposed
@@ -46,8 +49,56 @@ function formatModelName(rawName: string): string {
     return name;
 }
 
+function formatPath(cwd: string): string {
+    const home = os.homedir();
+    if (cwd.startsWith(home)) {
+        return "~" + cwd.substring(home.length);
+    }
+    return cwd;
+}
+
+export function createHeaderWidgetFactory(ctx: ExtensionContext, footerData: ReadonlyFooterDataProvider) {
+    return (tui: TUI, theme: Theme) => {
+        const component: Component = {
+            render(width: number): string[] {
+                const cwd = formatPath(ctx.cwd);
+                const branch = footerData.getGitBranch();
+                const gitStr = branch ? ` [\x1b[90m⎇ ${branch}\x1b[39m]` : "";
+                const leftStr = ` \x1b[90m${cwd}${gitStr}\x1b[39m`;
+
+                const hwStats = `\x1b[90mcpu: ${cpuUsage} mem: ${memUsage}\x1b[39m`;
+                
+                const statuses = footerData.getExtensionStatuses();
+                const extraStatuses = [];
+                for (const [key, val] of statuses.entries()) {
+                    if (key !== "focus-mode" && key !== "focus-tools-optimizer") { 
+                        extraStatuses.push(`${key}: ${val}`);
+                    }
+                }
+                const extraStr = extraStatuses.length > 0 ? "   " + extraStatuses.join("   ") : "";
+                const rightStr = `${hwStats}${extraStr} `;
+
+                const leftLen = visibleWidth(leftStr);
+                const rightLen = visibleWidth(rightStr);
+                const spaces = Math.max(0, width - leftLen - rightLen);
+                
+                const line1 = leftStr + " ".repeat(spaces) + rightStr;
+                
+                // The TUI or editor layout seems to provide the separators automatically
+                // when a widget is placed above or below the editor.
+                return [line1];
+            },
+            invalidate() {}
+        };
+        return component;
+    };
+}
+
 export function createStatusBarFactory(ctx: ExtensionContext, state: StatusBarState) {
     return (tui: TUI, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
+        // Register/Update header widget whenever footer is recreated/rendered
+        ctx.ui.setWidget("pi-focus-header", createHeaderWidgetFactory(ctx, footerData), { placement: "aboveEditor" });
+
         // Stop any old interval if recreating
         if (hardwarePollingInterval) {
             clearInterval(hardwarePollingInterval);
@@ -74,96 +125,71 @@ export function createStatusBarFactory(ctx: ExtensionContext, state: StatusBarSt
             render(width: number): string[] {
                 // Determine left side elements
                 const activeState = state.getActiveState().toLowerCase();
-                let stateIcon = "⏸";
-                let stateColor = "\x1b[90m"; // Gray for idle
-                if (activeState === "planning") { stateIcon = "🎯"; stateColor = "\x1b[94m"; } // Light Blue
-                if (activeState === "executing") { stateIcon = "⚡"; stateColor = "\x1b[93m"; } // Light Yellow
-                if (activeState === "reviewing") { stateIcon = "🔍"; stateColor = "\x1b[95m"; } // Light Magenta
+                let dotColor = "\x1b[90m"; // Gray for idle
+                if (activeState === "planning") { dotColor = "\x1b[38;5;206m"; } // Pinkish
+                if (activeState === "executing") { dotColor = "\x1b[38;5;214m"; } // Orange/Yellow
+                if (activeState === "reviewing") { dotColor = "\x1b[38;5;147m"; } // Light Purple
                 
-                const focusStr = `${stateIcon} ${stateColor}${activeState}\x1b[39m`;
+                // Match the sample: colored dot, white text
+                const dot = `${dotColor}●\x1b[39m`; 
+                const stateStr = `\x1b[37m${activeState}\x1b[39m`;
+                const focusStr = ` ${dot} ${stateStr}`;
 
                 const optState = state.getOptimizerStatus();
-                let optIcon = "⭕";
-                let optColor = "\x1b[90m"; // Gray for off
+                let optStr = "";
                 if (optState.enabled) {
-                    const cat = optState.category.toLowerCase();
-                    if (cat === "read") { optIcon = "👀"; optColor = "\x1b[96m"; } // Cyan
-                    else if (cat === "write") { optIcon = "✏️"; optColor = "\x1b[92m"; } // Green
-                    else if (cat === "search") { optIcon = "🔍"; optColor = "\x1b[94m"; } // Blue
-                    else if (cat === "respond") { optIcon = "💬"; optColor = "\x1b[95m"; } // Magenta
-                    else { optIcon = "⚡"; optColor = "\x1b[93m"; } // Yellow
+                    optStr = ` \x1b[90m(opt: ${optState.category.toLowerCase()})\x1b[39m`;
                 }
-                const optimizerStr = optState.enabled 
-                    ? `${optIcon} opt: ${optColor}${optState.category.toLowerCase()}\x1b[39m` 
-                    : `\x1b[90m${optIcon} opt: off\x1b[39m`;
                 
-                // Add project and git info
-                const projectName = path.basename(ctx.cwd);
-                const branch = footerData.getGitBranch();
-                // Light Blue for project, Light Magenta for git branch
-                const coloredProject = `\x1b[94m📁 ${projectName}\x1b[39m`;
-                const projectStr = branch 
-                    ? `${coloredProject} on \x1b[95m ${branch}\x1b[39m` 
-                    : coloredProject;
-                
-                const leftElements = [projectStr, focusStr, optimizerStr];
-                
-                // Add any extra extension statuses set via ctx.ui.setStatus
-                const statuses = footerData.getExtensionStatuses();
-                for (const [key, val] of statuses.entries()) {
-                    if (key !== "focus-mode" && key !== "focus-tools-optimizer") { 
-                        leftElements.push(`${key}: ${val}`);
-                    }
-                }
-
-                // Use the original vertical bar separator
-                const leftStr = "  " + leftElements.join("   |   ");
+                const leftStr = `${focusStr}${optStr}`;
 
                 // Determine right side elements
                 const rightElements = [];
                 
-                // Add colored hardware stats (Yellow for CPU, Green for Mem)
-                const cpuColored = `\x1b[93mcpu: ${cpuUsage}\x1b[39m`;
-                const memColored = `\x1b[92mmem: ${memUsage}\x1b[39m`;
-                rightElements.push(`${cpuColored}   ${memColored}`);
+                // Add tools and skills count
+                const activeTools = state.getActiveToolsCount();
+                const totalTools = state.getToolsCount();
+                const skillFiles = state.getSkillFilesCount();
                 
+                let countStr = `\x1b[90m${activeTools}/${totalTools} tools\x1b[39m`;
+                if (skillFiles > 0) {
+                    countStr += ` \x1b[90m· ${skillFiles} skills\x1b[39m`;
+                }
+                rightElements.push(countStr);
+
                 if (ctx.model) {
                     const rawName = ctx.model.name || "Unknown Model";
-                    // Add cyan color (\x1b[96m) to the model name and a robot icon
-                    rightElements.push(`\x1b[96m🤖 ${formatModelName(rawName)}\x1b[39m`);
+                    rightElements.push(`\x1b[96m${formatModelName(rawName)}\x1b[39m`);
                 } else {
-                    rightElements.push(`\x1b[90m🤖 No Model\x1b[39m`);
+                    rightElements.push(`\x1b[90mNo Model\x1b[39m`);
                 }
 
-                const rightStr = rightElements.join("   |   ") + "  ";
+                const rightStr = rightElements.join("   ") + " ";
+                const helpStr = "\x1b[90m\x1b[96m/\x1b[39m\x1b[90m commands · \x1b[96m?\x1b[39m\x1b[90m help\x1b[39m";
 
-                // Styling
-                // You can wrap these in Chalk/Theme colors if you import them, 
-                // but raw strings work well if styling isn't heavily imported.
-                // We'll use ANSI escape codes based on the theme or just minimal styling
-                const bg = "\x1b[48;5;236m"; // Dark gray background
-                const fg = "\x1b[38;5;253m"; // Light gray foreground
-                const reset = "\x1b[0m";
-                
                 const leftLen = visibleWidth(leftStr);
                 const rightLen = visibleWidth(rightStr);
+                const helpLen = visibleWidth(helpStr);
                 
-                // Construct the padded line
-                let line = "";
-                if (leftLen + rightLen > width) {
-                    // Not enough space, just truncate left side
-                    const avail = Math.max(0, width - rightLen - 1);
-                    line = leftStr.substring(0, avail) + " " + rightStr;
+                let contentLine = "";
+                const totalTextLen = leftLen + rightLen + helpLen;
+
+                if (width >= totalTextLen + 10) {
+                    // Enough space to center the help text
+                    const availableSpace = width - leftLen - rightLen;
+                    const helpPos = Math.floor(width / 2 - helpLen / 2);
+                    const spaceBeforeHelp = Math.max(1, helpPos - leftLen);
+                    const spaceAfterHelp = Math.max(1, width - leftLen - spaceBeforeHelp - helpLen - rightLen);
+                    
+                    contentLine = leftStr + " ".repeat(spaceBeforeHelp) + helpStr + " ".repeat(spaceAfterHelp) + rightStr;
                 } else {
-                    const spaces = width - leftLen - rightLen;
-                    line = leftStr + " ".repeat(spaces) + rightStr;
+                    // Not enough space for help text, just show left and right
+                    const spaces = Math.max(0, width - leftLen - rightLen);
+                    contentLine = leftStr + " ".repeat(spaces) + rightStr;
                 }
 
-                // Wrap the entire line in a dark gray background (ANSI 236)
-                // \x1b[49m resets the background color and \x1b[39m resets foreground
-                const finalString = `\x1b[48;5;236m\x1b[38;5;253m${line}\x1b[39m\x1b[49m`;
-
-                return [finalString];
+                // TUI adds the separator above the footer automatically
+                return [contentLine];
             },
 
             invalidate() {
@@ -171,6 +197,7 @@ export function createStatusBarFactory(ctx: ExtensionContext, state: StatusBarSt
             },
 
             dispose() {
+                ctx.ui.setWidget("pi-focus-header", undefined);
                 unsubscribeBranch();
                 renderCallbacks.delete(renderCallback);
                 if (hardwarePollingInterval) {
