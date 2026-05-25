@@ -1,9 +1,19 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 import { createStatusBarFactory, triggerFooterRender } from "./statusBar.js";
+
+// ─── Tool Call Event Type Definition ─────────────────────────────────────────
+interface ToolCallEvent {
+  toolName: string;
+  input?: {
+    path?: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
 
 // ─── Tools Optimizer Types & Constants ───────────────────────────────────────
 interface ToolCategory {
@@ -85,6 +95,8 @@ export default function (pi: ExtensionAPI) {
 
   // ─── Global State ───────────────────────────────────────────────────────────
   const stateMachine = new StateMachine();
+  // Using global state because ExtensionAPI doesn't provide a built-in state mechanism
+  // This is a known limitation of the current Pi Agent API
   (global as any).piFocusState = stateMachine;
   let isWritingTaskFile = false;
   let taskWatcher: fs.FSWatcher | null = null;
@@ -330,7 +342,8 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
 
   // ─── 2. Focus Mode Orchestrator Event Hooks ─────────────────────────────────
   
-  pi.on("before_agent_start", async (event, ctx) => {
+  // Note: Using any types due to incomplete TypeScript definitions in Pi Agent API
+  pi.on("before_agent_start", async (event: any, ctx: any) => {
     if (stateMachine.activeState === "planning") {
       const systemPrompt = loadAgentPrompt("planner");
       return { systemPrompt: injectDecisionGuidelines(systemPrompt) };
@@ -343,18 +356,18 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
       const systemPrompt = loadAgentPrompt("reviewer");
       return { systemPrompt: injectDecisionGuidelines(systemPrompt) };
     } else {
-      return { systemPrompt: injectDecisionGuidelines(event.systemPrompt) };
+      return { systemPrompt: injectDecisionGuidelines(event.systemPrompt || "") };
     }
   });
 
-  pi.on("tool_call", async (event, ctx) => {
-    const ev = event as any;
-    const toolName = ev.toolName;
+  // Note: Using any types due to incomplete TypeScript definitions in Pi Agent API
+  pi.on("tool_call", async (event: any, ctx: any) => {
+    const toolName = event.toolName;
     const writeTools = ["write_file", "edit_file", "patch_file", "edit", "write", "create_file", "append_file"];
 
     if (stateMachine.activeState === "planning") {
       if (writeTools.includes(toolName)) {
-        const targetPath = ev.input?.path ? String(ev.input.path) : "(unknown file)";
+        const targetPath = event.input?.path ? String(event.input.path) : "(unknown file)";
 
         const isTaskFile =
           targetPath === "task.md" ||
@@ -379,7 +392,7 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
     if (!todo || todo.allowedFiles.length === 0) return;
 
     if (writeTools.includes(toolName)) {
-      const targetPath = ev.input?.path ? String(ev.input.path) : "";
+      const targetPath = event.input?.path ? String(event.input.path) : "";
       if (!targetPath) return;
 
       const normalizedTarget = path.normalize(targetPath);
@@ -404,7 +417,10 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
 
           if (approve) {
             todo.allowedFiles.push(targetPath);
-            stateMachine.getActiveTodo()!.allowedFiles.push(normalizedTarget);
+            const activeTodo = stateMachine.getActiveTodo();
+            if (activeTodo) {
+              activeTodo.allowedFiles.push(normalizedTarget);
+            }
             syncTaskMarkdown();
             ctx.ui.notify(`✦ pi-focus › Whitelisted file path: ${targetPath}`, "info");
             return;
@@ -638,16 +654,19 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
                 stateMachine.activeState = "executing";
                 stateMachine.activeTodoId = incomplete.id;
               } else {
-                stateMachine.activeState = "executing";
-                stateMachine.activeTodoId = "1";
+                stateMachine.activeState = "idle";
+                stateMachine.activeTodoId = null;
+                ctx.ui.notify(`✦ pi-focus › All tasks complete. Use /focus_plan to start a new session.`, "info");
               }
             } else {
-              stateMachine.activeState = "executing";
-              stateMachine.activeTodoId = "1";
+              stateMachine.activeState = "idle";
+              stateMachine.activeTodoId = null;
+              ctx.ui.notify(`✦ pi-focus › No tasks found. Use /focus_plan to start a new session.`, "info");
             }
           } catch {
-            stateMachine.activeState = "executing";
-            stateMachine.activeTodoId = "1";
+            stateMachine.activeState = "idle";
+            stateMachine.activeTodoId = null;
+            console.error("[PI-FOCUS] Failed to approve plan, resetting to idle state");
           }
         } else {
           stateMachine.activeState = "executing";
@@ -670,7 +689,9 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
           try {
             const doneContent = `# Task Checklist: active plan progress\n\nThis checklist is managed by your pi-focus State Machine Orchestrator.\n\n**Active State:** \`IDLE\`\n\n*All tasks completed. Start a new session with \`/focus_plan\` when ready.*\n`;
             fs.writeFileSync(taskFilePath, doneContent, "utf-8");
-          } catch {}
+          } catch (err) {
+            console.error("[PI-FOCUS] Failed to write completed task.md:", err);
+          }
           finally { setTimeout(() => { isWritingTaskFile = false; }, 200); }
         }
 
@@ -719,8 +740,8 @@ Use \`focus_decision\` to ask the user how to handle any FAIL or WARN items.`;
 
   // ─── 5. Live Workspace File Watcher (task.md) ─────────────────────────────
   
-  function initializeOrchestrator(ctx: any) {
-    if (taskWatcher) { try { taskWatcher.close(); } catch {} taskWatcher = null; }
+  function initializeOrchestrator(ctx: ExtensionContext) {
+    if (taskWatcher) { try { taskWatcher.close(); } catch (err) { console.error("[PI-FOCUS] Failed to close task watcher:", err); } taskWatcher = null; }
 
     if (isInsideHomeDotDir(ctx.cwd)) { taskFilePath = ""; return; }
 

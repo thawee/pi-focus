@@ -4,7 +4,7 @@
   "description": "Dynamic Tool Routing and Plan Guardrails for Pi Agent",
   "main": "src/index.ts",
   "keywords": ["pi-package"],
-  "author": "Antigravity Pair",
+  "author": "thawee.p",
   "license": "MIT",
   "devDependencies": {
     "typescript": "^6.0.3",
