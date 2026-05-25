@@ -1,14 +1,12 @@
 import os from "node:os";
 import path from "node:path";
-import { type Component, type TUI, visibleWidth } from "@mariozechner/pi-tui";
+import { type Component, type TUI, visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@mariozechner/pi-coding-agent";
 
 export interface StatusBarState {
     getActiveState: () => string;
     getOptimizerStatus: () => { enabled: boolean; category: string };
-    getToolsCount: () => number;
-    getActiveToolsCount: () => number;
-    getSkillFilesCount: () => number;
+    getSkillsCount: () => { active: number; total: number };
 }
 
 // Keep track of the polling interval to clean up when the footer is disposed
@@ -41,11 +39,11 @@ function updateHardwareStats() {
 function formatModelName(rawName: string): string {
     // Strip organization prefix (e.g., Jackrong/)
     let name = rawName.includes('/') ? rawName.split('/').pop() || rawName : rawName;
-    
+
     // Strip common suffixes like -GGUF, :Q4_K_M, -Q4_K_M
     name = name.replace(/-gguf/i, '');
     name = name.replace(/[:\-]?Q[0-9].*/i, '');
-    
+
     return name;
 }
 
@@ -63,15 +61,15 @@ export function createHeaderWidgetFactory(ctx: ExtensionContext, footerData: Rea
             render(width: number): string[] {
                 const cwd = formatPath(ctx.cwd);
                 const branch = footerData.getGitBranch();
-                const gitStr = branch ? ` [\x1b[90m⎇ ${branch}\x1b[39m]` : "";
-                const leftStr = ` \x1b[90m${cwd}${gitStr}\x1b[39m`;
+                const gitStr = branch ? ` [\x1b[38;5;250m⎇ ${branch}\x1b[39m]` : "";
+                const leftStr = ` \x1b[38;5;250m${cwd}${gitStr}\x1b[39m`;
 
-                const hwStats = `\x1b[90mcpu: ${cpuUsage} mem: ${memUsage}\x1b[39m`;
-                
+                const hwStats = `\x1b[38;5;250mcpu: ${cpuUsage} mem: ${memUsage}\x1b[39m`;
+
                 const statuses = footerData.getExtensionStatuses();
                 const extraStatuses = [];
                 for (const [key, val] of statuses.entries()) {
-                    if (key !== "focus-mode" && key !== "focus-tools-optimizer") { 
+                    if (key !== "focus-mode" && key !== "focus-tools-optimizer") {
                         extraStatuses.push(`${key}: ${val}`);
                     }
                 }
@@ -81,14 +79,14 @@ export function createHeaderWidgetFactory(ctx: ExtensionContext, footerData: Rea
                 const leftLen = visibleWidth(leftStr);
                 const rightLen = visibleWidth(rightStr);
                 const spaces = Math.max(0, width - leftLen - rightLen);
-                
+
                 const line1 = leftStr + " ".repeat(spaces) + rightStr;
-                
+
                 // The TUI or editor layout seems to provide the separators automatically
                 // when a widget is placed above or below the editor.
-                return [line1];
+                return [truncateToWidth(line1, width)];
             },
-            invalidate() {}
+            invalidate() { }
         };
         return component;
     };
@@ -125,35 +123,34 @@ export function createStatusBarFactory(ctx: ExtensionContext, state: StatusBarSt
             render(width: number): string[] {
                 // Determine left side elements
                 const activeState = state.getActiveState().toLowerCase();
-                let dotColor = "\x1b[90m"; // Gray for idle
+                let dotColor = "\x1b[38;5;250m"; // Light grey for idle
                 if (activeState === "planning") { dotColor = "\x1b[38;5;206m"; } // Pinkish
                 if (activeState === "executing") { dotColor = "\x1b[38;5;214m"; } // Orange/Yellow
                 if (activeState === "reviewing") { dotColor = "\x1b[38;5;147m"; } // Light Purple
-                
-                // Match the sample: colored dot, white text
-                const dot = `${dotColor}●\x1b[39m`; 
-                const stateStr = `\x1b[37m${activeState}\x1b[39m`;
-                const focusStr = ` ${dot} ${stateStr}`;
+
+                // Match the branding: colored 'pi-focus' text, colored dot, default color for state
+                const piFocus = `${dotColor}pi-focus\x1b[39m`;
+                const dot = `${dotColor}●\x1b[39m`;
+                const focusStr = ` ${piFocus} ${dot} ${activeState}`;
 
                 const optState = state.getOptimizerStatus();
                 let optStr = "";
                 if (optState.enabled) {
-                    optStr = ` \x1b[90m(opt: ${optState.category.toLowerCase()})\x1b[39m`;
+                    optStr = ` \x1b[38;5;250m(opt: ${optState.category.toLowerCase()})\x1b[39m`;
                 }
-                
+
                 const leftStr = `${focusStr}${optStr}`;
 
                 // Determine right side elements
                 const rightElements = [];
-                
+
                 // Add tools and skills count
-                const activeTools = state.getActiveToolsCount();
-                const totalTools = state.getToolsCount();
-                const skillFiles = state.getSkillFilesCount();
-                
-                let countStr = `\x1b[90m${activeTools}/${totalTools} tools\x1b[39m`;
-                if (skillFiles > 0) {
-                    countStr += ` \x1b[90m· ${skillFiles} skills\x1b[39m`;
+                const skills = state.getSkillsCount();
+                let countStr = "";
+                if (skills.total > 0) {
+                    countStr = `\x1b[38;5;250m${skills.total} skills\x1b[39m`;
+                } else {
+                    countStr = `\x1b[38;5;242mno skills\x1b[39m`;
                 }
                 rightElements.push(countStr);
 
@@ -161,26 +158,26 @@ export function createStatusBarFactory(ctx: ExtensionContext, state: StatusBarSt
                     const rawName = ctx.model.name || "Unknown Model";
                     rightElements.push(`\x1b[96m${formatModelName(rawName)}\x1b[39m`);
                 } else {
-                    rightElements.push(`\x1b[90mNo Model\x1b[39m`);
+                    rightElements.push(`\x1b[38;5;250mNo Model\x1b[39m`);
                 }
 
                 const rightStr = rightElements.join("   ") + " ";
-                const helpStr = "\x1b[90m\x1b[96m/\x1b[39m\x1b[90m commands · \x1b[96m?\x1b[39m\x1b[90m help\x1b[39m";
+                const helpStr = "\x1b[38;5;250m\x1b[96m/focus_help\x1b[39m\x1b[38;5;250m · \x1b[96m/\x1b[39m\x1b[38;5;250m commands\x1b[39m";
 
                 const leftLen = visibleWidth(leftStr);
                 const rightLen = visibleWidth(rightStr);
                 const helpLen = visibleWidth(helpStr);
-                
+
                 let contentLine = "";
                 const totalTextLen = leftLen + rightLen + helpLen;
 
-                if (width >= totalTextLen + 10) {
+                if (width >= totalTextLen + 4) {
                     // Enough space to center the help text
                     const availableSpace = width - leftLen - rightLen;
                     const helpPos = Math.floor(width / 2 - helpLen / 2);
                     const spaceBeforeHelp = Math.max(1, helpPos - leftLen);
                     const spaceAfterHelp = Math.max(1, width - leftLen - spaceBeforeHelp - helpLen - rightLen);
-                    
+
                     contentLine = leftStr + " ".repeat(spaceBeforeHelp) + helpStr + " ".repeat(spaceAfterHelp) + rightStr;
                 } else {
                     // Not enough space for help text, just show left and right
@@ -189,7 +186,7 @@ export function createStatusBarFactory(ctx: ExtensionContext, state: StatusBarSt
                 }
 
                 // TUI adds the separator above the footer automatically
-                return [contentLine];
+                return [truncateToWidth(contentLine, width), " "];
             },
 
             invalidate() {

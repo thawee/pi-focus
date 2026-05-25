@@ -1,11 +1,11 @@
-# ⚡ pi-focus
+# \x1b[96mpi-focus\x1b[39m v1.4.0
 Keep your Pi Agent fast, focused, and impossible to derail.
 
-pi-focus is a zero-spawn orchestration engine for Pi Agent that turns autonomous AI coding into a safe, stateful, high-performance workflow.
+\x1b[96mpi-focus\x1b[39m is a zero-spawn orchestration engine for Pi Agent that turns autonomous AI coding into a safe, stateful, high-performance workflow.
 
-Unlike traditional multi-agent systems that constantly spawn new planner/coder processes and lose context along the way, pi-focus keeps everything running inside one continuous hot-context session. The result is dramatically lower latency, fewer hallucinations, reduced token bloat, and an AI that actually remembers why it's doing something.
+Unlike traditional multi-agent systems that constantly spawn new planner/coder processes and lose context along the way, \x1b[96mpi-focus\x1b[39m keeps everything running inside one continuous hot-context session. The result is dramatically lower latency, fewer hallucinations, reduced token bloat, and an AI that actually remembers why it's doing something.
 
-Built around a deterministic TypeScript state machine, `pi-focus` combines:
+Built around a deterministic TypeScript state machine, `\x1b[96mpi-focus\x1b[39m` combines:
 
 - ⚡ Dynamic tool routing & token pruning
 - 🧠 Zero-spawn in-memory role switching
@@ -16,7 +16,7 @@ Built around a deterministic TypeScript state machine, `pi-focus` combines:
 
 …into a single lightweight extension package designed for long-running AI development sessions.
 
-Instead of “prompting the AI to behave,” pi-focus structurally enforces workflow boundaries in code — preventing drift, rogue edits, and context collapse before they happen.
+Instead of “prompting the AI to behave,” \x1b[96mpi-focus\x1b[39m structurally enforces workflow boundaries in code — preventing drift, rogue edits, and context collapse before they happen.
 
 ### 💰 The P.A.I.D. Workflow
 If you want to ship features fast without your AI going rogue, you have to get **P.A.I.D.**
@@ -42,12 +42,12 @@ If you want to ship features fast without your AI going rogue, you have to get *
 
 ## 🧠 Core Philosophy
 
-`pi-focus` shifts the burden of orchestration away from the LLM's brain, and puts it into rock-solid TypeScript code. It was built to solve the four biggest problems with autonomous agents:
+`\x1b[96mpi-focus\x1b[39m` shifts the burden of orchestration away from the LLM's brain, and puts it into rock-solid TypeScript code. It was built to solve the four biggest problems with autonomous agents:
 
-*   **The "Single Brain" Approach (Zero Context Loss):** Traditional orchestrators spawn entirely new sub-agents for different tasks (e.g., Planner passes to Coder). The Coder loses all the context of *why* the plan was made. `pi-focus` keeps everything in **one single thread**. It hot-swaps the system instructions dynamically. Because the LLM retains 100% of the conversational memory, it never loses the plot.
-*   **Structural Enforcement > Prompt Begging:** Most agents rely on begging the LLM in the system prompt. `pi-focus` uses hardcoded security gates. While the planner is allowed flexibility to prototype, it physically removes the Worker's ability to edit unauthorized files once in the `EXECUTING` state.
+*   **The "Single Brain" Approach (Zero Context Loss):** Traditional orchestrators spawn entirely new sub-agents for different tasks (e.g., Planner passes to Coder). The Coder loses all the context of *why* the plan was made. `\x1b[96mpi-focus\x1b[39m` keeps everything in **one single thread**. It hot-swaps the system instructions dynamically. Because the LLM retains 100% of the conversational memory, it never loses the plot.
+*   **Structural Enforcement > Prompt Begging:** Most agents rely on begging the LLM in the system prompt. `\x1b[96mpi-focus\x1b[39m` uses hardcoded security gates. While the planner is allowed flexibility to prototype, it physically removes the Worker's ability to edit unauthorized files once in the `EXECUTING` state.
 *   **The Token Economy:** Injecting 30 complex tool schemas into every chat message costs thousands of tokens per turn and causes tool hallucination. The `focus-tools-optimizer` acts as a token firewall, dropping irrelevant tools based on your intent, drastically reducing context bloat.
-*   **The Human-in-the-Loop Handshake:** Agents often go rogue, executing 20 steps in the wrong direction. By forcing a structural pause (the `focus_decision` TUI) between the Planning and Executing states, `pi-focus` ensures the agent never takes an action without your explicit blessing.
+*   **The Human-in-the-Loop Handshake:** Agents often go rogue, executing 20 steps in the wrong direction. By forcing a structural pause (the `focus_decision` TUI) between the Planning and Executing states, `\x1b[96mpi-focus\x1b[39m` ensures the agent never takes an action without your explicit blessing.
 
 ---
 
@@ -60,20 +60,20 @@ pi-focus/
 ├── README.md           # Documentation
 ├── package.json        # Dependencies & package metadata
 ├── setup.sh            # Setup, compilation, and symlink manager
-└── extensions/
-    ├── focus-tools-optimizer/ # Intent classifier & tool schema pruner
-    └── focus-mode/            # Zero-spawn Stateful Orchestrator
+└── src/
+    ├── index.ts        # Main orchestrator entry point
+    └── statusBar.ts    # Custom TUI components (Header & Footer)
 ```
 
 ### 2. Installation & Configuration
 
-You can install `pi-focus` directly from GitHub using the Pi Agent CLI:
+You can install `\x1b[96mpi-focus\x1b[39m` directly from GitHub using the Pi Agent CLI:
 
 ```bash
 pi install git:github.com/thawee/pi-focus
 ```
 
-This will automatically download the repository and register both the `focus-tools-optimizer` and `focus-mode` extensions to your global `~/.pi/agent/settings.json`.
+This will automatically download the repository and register the extension to your global `~/.pi/agent/settings.json`.
 
 💡 **Important Conflict Notice:** Any active workflow or orchestration extensions may conflict with the `focus-mode` state-machine. It is highly recommended to open your `settings.json` and remove any other global orchestrators (for example, remove `"git:github.com/HazAT/pi-solo"`) from your active packages list.
 
@@ -90,7 +90,13 @@ Run these slash commands directly inside your terminal session to drive the stat
 *   **`/focus_plan`:** Instantly swaps system instructions to Planning Mode. The embedded planner analyzes the codebase, clarifies scope via `focus_decision`, drafts `task.md`, and presents the plan for approval before any code is written.
 *   **`/focus_resume`:** Evaluates an existing `task.md` file on startup. If incomplete steps remain, it presents the plan via `focus_decision` allowing you to resume execution, modify steps, or clear the plan entirely.
 *   **`/focus_review`:** Swaps system instructions to Reviewer Mode. The embedded reviewer produces a structured PASS/WARN/FAIL report and uses `focus_decision` to resolve any failures.
+*   **`/focus_help`:** Shows the quick reference guide and all available commands.
 *   **`/tools_optimizer`:** Toggles the dynamic tools-optimizer pruning feature ON or OFF. Useful if you temporarily want all tools available in idle mode.
+
+### 🛡️ Status Bar Quick Hints
+The status bar provides quick reference hints for essential commands:
+**`/focus_help · / commands`**
+
 
 ### 🔄 The Standard Workflow
 
